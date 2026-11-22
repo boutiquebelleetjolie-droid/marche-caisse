@@ -202,11 +202,14 @@ async function showCaisse() {
         <h2 style="margin:0">Caisse</h2>
         <div style="flex:0 0 auto" class="row">
           <button class="btn small ghost" id="cJour">Ventes du jour</button>
+          <button class="btn small ghost" id="cSortie">Sortie d'espèces</button>
+          <button class="btn small" id="cZ">Clôture / Ticket Z</button>
           <button class="btn small osb" id="cEtiq">Étiquettes</button>
           <button class="btn small ghost" id="cReload">Actualiser les articles</button>
           ${!S.token ? `<button class="btn small ghost" id="cQuit">Fermer la caisse</button>` : ""}
         </div>
       </div>
+      <div id="cSession"></div>
       <input class="scan" id="scan" placeholder="Scanner ou taper une référence / un nom d'article" autofocus autocomplete="off">
       <div id="cmsg"></div>
       <div class="results" id="results"></div>
@@ -224,6 +227,9 @@ async function showCaisse() {
   </div>`;
   $("#cReload").onclick = loadProds;
   $("#cJour").onclick = venteDuJour;
+  $("#cSortie").onclick = sortieEspeces;
+  $("#cZ").onclick = clotureCaisse;
+  loadSession();
   $("#cEtiq").onclick = () => printLabels(PRODS);
   if ($("#cQuit")) $("#cQuit").onclick = showLogin;
   $("#cClear").onclick = () => { CART = []; renderCart(); };
@@ -346,6 +352,134 @@ function showTicket(v) {
   $("#tClose").onclick = () => { closeModal(); $("#scan")?.focus(); };
   $("#tPrint").onclick = () => { $("#modal").classList.add("print-zone"); window.print(); $("#modal").classList.remove("print-zone"); };
 }
+// ================== TIROIR-CAISSE ==================
+const COUPURES = [500, 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01];
+const coupLabel = (v) => v >= 5 ? `Billet ${v} €` : v >= 1 ? `Pièce ${v} €` : `Pièce ${Math.round(v * 100)} c`;
+let SESSION = null;
+function comptageHTML(id, init = {}) {
+  return `<div id="${id}">${COUPURES.map((v) => `<div class="row" style="align-items:center;margin-bottom:4px;gap:6px">
+    <span style="min-width:110px;flex:0 0 auto">${coupLabel(v)}</span>
+    <span class="qty" style="flex:0 0 auto"><button type="button" data-m="-1">−</button><input data-v="${v}" type="number" min="0" value="${init[v] || 0}" style="width:64px;text-align:center;padding:6px"><button type="button" data-m="1">+</button></span>
+    <span class="muted" data-st="${v}" style="text-align:right">${eur(Math.round(v * 100) * (init[v] || 0))}</span></div>`).join("")}
+    <div class="total" data-tot>0,00 €</div></div>`;
+}
+function bindComptage(id, onChange) {
+  const root = $("#" + id);
+  const read = () => { const c = {}; root.querySelectorAll("[data-v]").forEach((i) => { const n = parseInt(i.value, 10) || 0; if (n) c[i.dataset.v] = n; }); return c; };
+  const upd = () => {
+    let t = 0;
+    root.querySelectorAll("[data-v]").forEach((i) => { const st = Math.round(Number(i.dataset.v) * 100) * (parseInt(i.value, 10) || 0); t += st; root.querySelector(`[data-st="${i.dataset.v}"]`).textContent = eur(st); });
+    root.querySelector("[data-tot]").textContent = "Total compté : " + eur(t);
+    onChange && onChange(t, read());
+  };
+  root.querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => { const i = b.parentElement.querySelector("input"); i.value = Math.max(0, (parseInt(i.value, 10) || 0) + Number(b.dataset.m)); upd(); }));
+  root.querySelectorAll("[data-v]").forEach((i) => (i.oninput = upd));
+  upd();
+  return read;
+}
+async function loadSession() {
+  try { SESSION = await api("/caisse/session"); } catch { return; }
+  const el = $("#cSession"); if (!el) return;
+  if (SESSION.z) el.innerHTML = `<div class="msg ok">Caisse clôturée aujourd'hui à ${new Date(SESSION.z.heure).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}. <button class="btn small ghost" id="reZ">Réimprimer le Z</button></div>`;
+  else if (!SESSION.ouverture) el.innerHTML = `<div class="msg err">Fond de caisse du matin non validé. <button class="btn small osb" id="goOuv">Ouvrir la caisse et compter le fond</button></div>`;
+  else el.innerHTML = `<div class="muted" style="margin:6px 0">Caisse ouverte à ${new Date(SESSION.ouverture.heure).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}${SESSION.ouverture.vendeur ? " par " + esc(SESSION.ouverture.vendeur) : ""} · fond ${eur(SESSION.ouverture.total)}</div>`;
+  if ($("#goOuv")) $("#goOuv").onclick = ouvertureCaisse;
+  if ($("#reZ")) $("#reZ").onclick = () => printZ(SESSION.z);
+}
+function ouvertureCaisse() {
+  const fond = SESSION?.fondReserve ?? 8000;
+  openModal(`<h2>Ouverture de caisse</h2><p class="muted">Comptez le tiroir. Le fond de caisse attendu est de <b>${eur(fond)}</b>.</p>
+    <label>Votre nom</label><input id="oVend" placeholder="Qui ouvre la caisse ?">
+    ${comptageHTML("oCpt")}<div id="oEcart"></div><div id="omsg"></div>
+    <div class="row"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="oGo">Valider l'ouverture</button></div>`);
+  const read = bindComptage("oCpt", (t) => {
+    const e = t - fond;
+    $("#oEcart").innerHTML = e === 0 ? `<div class="msg ok">Le fond est juste.</div>` : `<div class="msg err">Écart de ${e > 0 ? "+" : ""}${eur(e)} par rapport aux ${eur(fond)} attendus. Recomptez le tiroir.</div>`;
+  });
+  $("#oGo").onclick = async () => {
+    if (!$("#oVend").value.trim()) return msg($("#omsg"), "Indiquez votre nom.");
+    try { await api("/caisse/ouverture", { method: "POST", body: { vendeur: $("#oVend").value, comptage: read() } }); closeModal(); loadSession(); }
+    catch (e) { msg($("#omsg"), e.message); }
+  };
+}
+function sortieEspeces() {
+  openModal(`<h2>Sortie d'espèces</h2><p class="muted">Argent pris dans le tiroir (achat de fournitures, timbres…). Elle apparaîtra sur le ticket Z.</p>
+    <label>Montant (€)</label><input id="soMt" inputmode="decimal"><label>Motif</label><input id="soMo"><label>Votre nom</label><input id="soVe">
+    <div id="somsg"></div><div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="soGo">Enregistrer</button></div>`);
+  $("#soGo").onclick = async () => {
+    try { await api("/caisse/sortie", { method: "POST", body: { montant: $("#soMt").value, motif: $("#soMo").value, vendeur: $("#soVe").value } }); closeModal(); loadSession(); }
+    catch (e) { msg($("#somsg"), e.message); }
+  };
+}
+async function clotureCaisse() {
+  let z;
+  try { z = await api("/caisse/z/apercu", { method: "POST", body: { comptage: {} } }); } catch (e) { return msg($("#cmsg"), e.message); }
+  const modes = Object.entries(z.parMode).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><b style="text-align:right">${eur(v)}</b></div>`).join("") || `<p class="muted">Aucune vente aujourd'hui.</p>`;
+  openModal(`<h2>Clôture de caisse</h2>
+    ${z.ouvertureValidee ? "" : `<div class="msg err">L'ouverture n'a pas été validée ce matin : le fond est compté à ${eur(z.fondOuverture)}.</div>`}
+    <div class="kpis"><div class="kpi"><div class="l">CA du jour</div><div class="v">${eur(z.ca)}</div></div><div class="kpi"><div class="l">Tickets</div><div class="v">${z.nbVentes}</div></div></div>
+    ${modes}
+    <h3>Espèces attendues dans le tiroir</h3>
+    <div class="row"><span>Fond d'ouverture</span><b style="text-align:right">${eur(z.fondOuverture)}</b></div>
+    <div class="row"><span>+ Espèces encaissées</span><b style="text-align:right">${eur(z.especes)}</b></div>
+    ${z.sorties.map((x) => `<div class="row"><span>− Sortie : ${esc(x.motif)}</span><b style="text-align:right;color:var(--rouge)">−${eur(x.montant)}</b></div>`).join("")}
+    <div class="row"><span><b>= Attendu</b></span><b style="text-align:right">${eur(z.attendu)}</b></div>
+    <h3>Comptez le tiroir</h3>
+    <label>Votre nom</label><input id="fVend" placeholder="Qui clôture la caisse ?">
+    ${comptageHTML("fCpt")}<div id="fRes"></div>
+    <label>Note (facultatif)</label><input id="fNote">
+    <div id="fmsg"></div>
+    <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="fGo">Valider la clôture et imprimer le Z</button></div>`);
+  const read = bindComptage("fCpt", (t) => {
+    const e = t - z.attendu, dep = Math.max(0, t - z.fondReserve);
+    $("#fRes").innerHTML = `<div class="msg ${Math.abs(e) <= 100 ? "ok" : "err"}">Écart : ${e > 0 ? "+" : ""}${eur(e)}</div>
+      <div class="rendu">À déposer en banque : ${eur(dep)}<div style="font-size:13px;font-weight:400">On laisse ${eur(z.fondReserve)} dans le tiroir pour demain.</div></div>`;
+  });
+  $("#fGo").onclick = async () => {
+    if (!$("#fVend").value.trim()) return msg($("#fmsg"), "Indiquez votre nom.");
+    if (SESSION?.z && !confirm("La caisse a déjà été clôturée aujourd'hui. Refaire la clôture ?")) return;
+    try { const zf = await api("/caisse/fermeture", { method: "POST", body: { comptage: read(), vendeur: $("#fVend").value, note: $("#fNote").value } }); closeModal(); loadSession(); printZ(zf); }
+    catch (e) { msg($("#fmsg"), e.message); }
+  };
+}
+function printZ(z) {
+  const st = S.settings;
+  const L = (a, b, cls = "") => `<tr><td>${a}</td><td class="${cls}">${b}</td></tr>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Ticket Z ${z.jour}</title><style>
+    body{font-family:Arial,sans-serif;padding:20px;max-width:380px;margin:0 auto;font-size:13px}h1{font-size:16px;text-align:center;margin:4px 0}
+    table{width:100%;border-collapse:collapse}td{padding:5px 0;border-bottom:1px solid #eee}td:last-child{text-align:right}
+    .b{font-weight:700}.t{font-weight:700;font-size:15px}h2{font-size:12px;color:#555;margin:14px 0 4px;text-transform:uppercase}
+    .ok{color:green;font-weight:700}.ko{color:red;font-weight:700}</style></head><body onload="window.print()">
+    <div style="text-align:center"><b>${esc(st.nomBoutique)}</b>${st.adresse ? "<br>" + esc(st.adresse) : ""}</div>
+    <h1>Ticket Z – Clôture de caisse</h1>
+    <p><b>${new Date(z.jour + "T12:00:00").toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</b><br>
+    Clôturé à ${new Date(z.heure).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}${z.vendeur ? " par " + esc(z.vendeur) : ""}${z.poste ? " · " + esc(z.poste) : ""}</p>
+    <h2>Ventes</h2><table>
+      ${L("Nombre de clients (tickets)", z.nbVentes, "b")}${L("Articles vendus", z.articles)}${L("Panier moyen", eur(z.panierMoyen))}
+      ${L("CHIFFRE D'AFFAIRES TTC", eur(z.ca), "t")}
+      ${z.annulations.nb ? L(`Ventes annulées (${z.annulations.nb})`, eur(z.annulations.montant)) : ""}</table>
+    <h2>Encaissements</h2><table>
+      ${L("Carte bancaire", eur(z.parMode["CB"] || 0), "b")}${L("Espèces", eur(z.parMode["Espèces"] || 0), "b")}
+      ${L("TOTAL ENCAISSÉ", eur(z.ca), "t")}</table>
+    <h2>Fond de caisse</h2><table>
+      ${L("Fond d'ouverture" + (z.ouvertureValidee ? "" : " (non compté)"), eur(z.fondOuverture))}
+      ${L("Espèces encaissées", eur(z.especes))}
+      ${z.sorties.map((x) => L("Sortie d'espèces : " + esc(x.motif), "−" + eur(x.montant))).join("")}
+      ${L("Espèces attendues", eur(z.attendu), "b")}
+      ${L("Total compté à la fermeture", eur(z.fondFermeture), "b")}
+      ${L("Écart", (z.ecart > 0 ? "+" : "") + eur(z.ecart), Math.abs(z.ecart) <= 100 ? "ok" : "ko")}
+      ${L("Fond laissé dans le tiroir", eur(Math.min(z.fondReserve, z.fondFermeture)))}
+      ${L("À DÉPOSER EN BANQUE", eur(z.aDeposer), "t")}</table>
+    <h2>Ventes par artisan</h2><table>
+      ${z.parArtisan.map((r) => L(esc(r.artisanNom) + ` (${r.articles} art.)`, eur(r.ca))).join("") || L("Aucune vente", "")}
+      ${L("Commission boutique", eur(z.commission), "b")}${L("À reverser aux artisans", eur(z.ca - z.commission), "b")}</table>
+    ${z.note ? `<p><em>${esc(z.note)}</em></p>` : ""}
+    <p style="font-size:11px;color:#777;text-align:center;margin-top:14px">Ventes réalisées au nom et pour le compte des artisans et producteurs.</p>
+    </body></html>`;
+  const w = window.open("", "_blank", "width=500,height=750");
+  if (w) { w.document.write(html); w.document.close(); } else alert("Autorisez les fenêtres pop-up pour imprimer le ticket Z.");
+}
+
 async function venteDuJour() {
   try {
     const d = await api("/caisse/jour");
@@ -591,8 +725,12 @@ async function adminDashboard() {
 }
 
 async function adminVentes() {
-  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div></div></div><div class="card" id="vl"></div>`;
+  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div></div></div><div class="card" id="zl"></div><div class="card" id="vl"></div>`;
   const load = async () => {
+    const Z = await api("/z?mois=" + $("#mois").value);
+    $("#zl").innerHTML = `<h2>Tickets Z (clôtures de caisse)</h2><table><tr><th>Jour</th><th>Clôturé par</th><th class="num">CA</th><th class="num">Écart</th><th class="num">À déposer</th><th></th></tr>
+      ${Z.map((z, i) => `<tr><td>${fd(z.jour)}</td><td>${esc(z.vendeur)}</td><td class="num">${eur(z.ca)}</td><td class="num" style="color:${Math.abs(z.ecart) <= 100 ? "inherit" : "var(--rouge)"}">${eur(z.ecart)}</td><td class="num">${eur(z.aDeposer)}</td><td class="num"><button class="btn small ghost" data-z="${i}">Imprimer</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucune clôture ce mois-ci.</td></tr>`}</table>`;
+    $("#zl").querySelectorAll("[data-z]").forEach((b) => (b.onclick = () => printZ(Z[b.dataset.z])));
     const V = await api("/ventes?mois=" + $("#mois").value);
     $("#vl").innerHTML = `<h2>Tickets</h2><table><tr><th>Date</th><th>N°</th><th>Articles</th><th>Paiement</th><th class="num">Total</th><th></th></tr>
       ${V.map((v, i) => `<tr><td>${fdate(v.date)}</td><td>${esc(v.numero)}</td><td>${v.lignes.map((l) => `${l.qte} × ${esc(l.nom)} <span class="muted">(${esc(l.artisanNom)})</span>`).join("<br>")}</td>
@@ -668,6 +806,7 @@ async function adminParametres() {
       <label>Nom de la boutique (affiché sur les tickets)</label><input id="sNom" value="${esc(s.nomBoutique)}">
       <label>Adresse (ticket)</label><input id="sAdr" value="${esc(s.adresse)}">
       <label>Commission de la boutique (%)</label><input id="sCom" type="number" value="${s.commission}">
+      <label>Fond de caisse laissé dans le tiroir (€)</label><input id="sFond" inputmode="decimal" value="${(s.fondReserve / 100).toFixed(2).replace(".", ",")}">
       <div id="smsg"></div><button class="btn" id="sGo" style="margin-top:10px">Enregistrer</button></div>
     <div class="card"><h2>Poste caisse</h2>
       <p class="muted">L'encaissement ne fonctionne que sur un poste activé. Activez uniquement l'ordinateur ou la tablette de la boutique.</p>
@@ -678,7 +817,7 @@ async function adminParametres() {
     </div>
     <div class="card"><h2>Mot de passe gérance</h2><label>Nouveau mot de passe</label><input type="password" id="apw"><div id="apm"></div><button class="btn" id="apgo" style="margin-top:10px">Changer</button></div></div>`;
   $("#sGo").onclick = async () => {
-    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
+    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
     catch (e) { msg($("#smsg"), e.message); }
   };
   if ($("#act")) $("#act").onclick = async () => {

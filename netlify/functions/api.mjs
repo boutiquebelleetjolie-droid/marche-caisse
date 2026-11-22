@@ -46,6 +46,7 @@ async function getSettings() {
     nomBoutique: "Le Marché des Artisans et Producteurs",
     commission: 20,
     adresse: "",
+    fondReserve: 8000,
     ...((await getJSON("settings")) || {}),
   };
 }
@@ -128,6 +129,37 @@ function analyse(ventes) {
   };
 }
 
+// Comptage du tiroir : { "50": 2, "0.2": 5 } (valeur en euros -> nombre)
+function totalComptage(c) {
+  return Object.entries(c || {}).reduce((s, [val, n]) => s + Math.round(Number(val) * 100) * (parseInt(n, 10) || 0), 0);
+}
+async function calculerZ(jour, comptageFermeture) {
+  const s = await getSettings();
+  const toutes = await ventesEntre(jour, jour);
+  const ventes = toutes.filter((v) => !v.annulee);
+  const annulees = toutes.filter((v) => v.annulee);
+  const [ouverture, sorties] = await Promise.all([getJSON(`caisse/${jour}/ouverture`), listJSON(`caisse/${jour}/sorties/`)]);
+  const parMode = {};
+  for (const v of ventes) parMode[v.paiement.mode] = (parMode[v.paiement.mode] || 0) + v.total;
+  const ca = ventes.reduce((t, v) => t + v.total, 0);
+  const articles = ventes.reduce((t, v) => t + v.lignes.reduce((a, l) => a + l.qte, 0), 0);
+  const especes = parMode["Espèces"] || 0;
+  const fondOuverture = ouverture ? ouverture.total : s.fondReserve;
+  const totalSorties = sorties.reduce((t, x) => t + x.montant, 0);
+  const fondFermeture = totalComptage(comptageFermeture);
+  const attendu = fondOuverture + especes - totalSorties;
+  const res = resumeParArtisan(ventes, s.commission);
+  return {
+    jour, heure: new Date().toISOString(), nbVentes: ventes.length, articles, ca, parMode,
+    panierMoyen: ventes.length ? Math.round(ca / ventes.length) : 0,
+    annulations: { nb: annulees.length, montant: annulees.reduce((t, v) => t + v.total, 0) },
+    commission: res.par.reduce((t, r) => t + r.commission, 0), parArtisan: res.par,
+    fondOuverture, ouvertureValidee: !!ouverture, especes, sorties, totalSorties,
+    comptageFermeture, fondFermeture, attendu, ecart: fondFermeture - attendu,
+    fondReserve: s.fondReserve, aDeposer: Math.max(0, fondFermeture - s.fondReserve),
+  };
+}
+
 function resumeParArtisan(ventes, taux) {
   const par = {};
   let total = 0;
@@ -176,7 +208,7 @@ export default async (req) => {
 
     if (path === "/settings/public" && m === "GET") {
       const s = await getSettings();
-      return json({ nomBoutique: s.nomBoutique, adresse: s.adresse, commission: s.commission });
+      return json({ nomBoutique: s.nomBoutique, adresse: s.adresse, commission: s.commission, fondReserve: s.fondReserve });
     }
 
     // --- Espace caisse (uniquement sur un poste activé) ---
@@ -213,6 +245,43 @@ export default async (req) => {
           if (p && typeof p.stock === "number") { p.stock = Math.max(0, p.stock - l.qte); await setJSON(`products/${p.ref}`, p); }
         }
         return json(vente);
+      }
+
+      // ----- Tiroir-caisse : ouverture, sorties d'espèces, clôture (ticket Z) -----
+      if (path === "/caisse/session" && m === "GET") {
+        const jour = parisDate(new Date().toISOString());
+        const s = await getSettings();
+        const [ouverture, z, sorties] = await Promise.all([getJSON(`caisse/${jour}/ouverture`), getJSON(`caisse/${jour}/z`), listJSON(`caisse/${jour}/sorties/`)]);
+        return json({ jour, fondReserve: s.fondReserve, ouverture, z, sorties });
+      }
+      if (path === "/caisse/ouverture" && m === "POST") {
+        const jour = parisDate(new Date().toISOString());
+        const s = await getSettings();
+        const comptage = body.comptage || {};
+        const total = totalComptage(comptage);
+        const o = { jour, heure: new Date().toISOString(), vendeur: String(body.vendeur || "").trim(), comptage, total, ecart: total - s.fondReserve, poste: dev.nom };
+        await setJSON(`caisse/${jour}/ouverture`, o);
+        return json(o);
+      }
+      if (path === "/caisse/sortie" && m === "POST") {
+        const jour = parisDate(new Date().toISOString());
+        const montant = toCents(body.montant);
+        if (!(montant > 0) || !String(body.motif || "").trim()) return err("Montant et motif obligatoires");
+        const so = { id: uid(), heure: new Date().toISOString(), montant, motif: String(body.motif).trim(), vendeur: String(body.vendeur || "").trim() };
+        await setJSON(`caisse/${jour}/sorties/${so.id}`, so);
+        return json(so);
+      }
+      if (path === "/caisse/fermeture" && m === "POST") {
+        const jour = parisDate(new Date().toISOString());
+        const z = await calculerZ(jour, body.comptage || {});
+        z.vendeur = String(body.vendeur || "").trim();
+        z.note = String(body.note || "").trim();
+        z.poste = dev.nom;
+        await setJSON(`caisse/${jour}/z`, z);
+        return json(z);
+      }
+      if (path === "/caisse/z/apercu" && m === "POST") {
+        return json(await calculerZ(parisDate(new Date().toISOString()), body.comptage || {}));
       }
 
       if (path === "/caisse/jour" && m === "GET") {
@@ -373,12 +442,19 @@ export default async (req) => {
       return json(v);
     }
 
+    if (path === "/z" && m === "GET") {
+      const mois = url.searchParams.get("mois") || new Date().toISOString().slice(0, 7);
+      const { blobs } = await store().list({ prefix: "caisse/" + mois });
+      const zs = (await Promise.all(blobs.filter((b) => b.key.endsWith("/z")).map((b) => getJSON(b.key)))).filter(Boolean);
+      return json(zs.sort((a, b) => b.jour.localeCompare(a.jour)));
+    }
     if (path === "/settings" && m === "GET") return json(settings);
     if (path === "/settings" && m === "PUT") {
       const s = { ...settings };
       if (body.nomBoutique != null) s.nomBoutique = String(body.nomBoutique).trim();
       if (body.adresse != null) s.adresse = String(body.adresse).trim();
       if (body.commission != null) s.commission = Math.min(100, Math.max(0, Number(body.commission) || 0));
+      if (body.fondReserve != null && body.fondReserve !== "") s.fondReserve = Math.max(0, toCents(body.fondReserve));
       await setJSON("settings", s);
       return json(s);
     }
