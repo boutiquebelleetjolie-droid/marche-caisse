@@ -255,7 +255,8 @@ async function releve(mois, artisanId) {
     mois, du, au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA },
     artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand },
     lignes, ca, commissionTaux: s.commission, commission, penalites, totalPenalites, loyer, formule: sansAccueil ? "sans participation à l'accueil" : "avec participation à l'accueil",
-    aReverser: ca - commission - totalPenalites, facture: fac,
+    supplement: sansAccueil ? s.supplementSansAccueil : 0,
+    aReverser: ca - commission - totalPenalites - (sansAccueil ? s.supplementSansAccueil : 0), facture: fac,
   };
 }
 

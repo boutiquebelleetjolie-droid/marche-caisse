@@ -680,7 +680,7 @@ async function planningView(cible, modeCaisse = false) {
 async function imprimerReleve(mois, artisanId) {
   const r = await api(`/releve?mois=${mois}${artisanId ? "&artisanId=" + artisanId : ""}`);
   const b = r.boutique, mm = new Date(mois + "-15").toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
-  const facture = r.commission + r.totalPenalites;
+  const facture = r.commission + r.totalPenalites + (r.supplement || 0);
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relevé ${esc(r.artisan.nom)} ${mois}</title><style>
     body{font-family:Arial,sans-serif;font-size:12px;color:#222;max-width:190mm;margin:10mm auto}h1{font-size:18px;margin:0}h2{font-size:14px;margin:22px 0 8px;border-bottom:2px solid #6f8f72;padding-bottom:4px}
     table{width:100%;border-collapse:collapse}th,td{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}td.n,th.n{text-align:right}
@@ -696,6 +696,7 @@ async function imprimerReleve(mois, artisanId) {
     <table><tr><th>Désignation</th><th class="n">Montant</th></tr>
       <tr><td>Commission de ${r.commissionTaux} % sur les ventes réalisées pour votre compte (${eur(r.ca)})</td><td class="n">${eur(r.commission)}</td></tr>
       ${r.penalites.map((x) => `<tr><td>Pénalité : ${esc(x.motif)} le ${fd(x.date)} (${x.creneau === "matin" ? "matin" : "après-midi"})</td><td class="n">${eur(x.montant)}</td></tr>`).join("")}
+      ${r.supplement ? `<tr><td>Supplément mensuel formule sans participation à l'accueil (${mm})</td><td class="n">${eur(r.supplement)}</td></tr>` : ""}
       <tr class="tot"><td>Total ${esc(b.mentionTVA ? "" : "TTC")}</td><td class="n big">${eur(facture)}</td></tr></table>
     <p style="font-size:11px">${esc(b.mentionTVA)}<br>Montant déduit des ventes reversées ci-dessous.</p>
 
@@ -704,8 +705,9 @@ async function imprimerReleve(mois, artisanId) {
       <tr><td>Ventes réalisées pour votre compte</td><td class="n">${eur(r.ca)}</td></tr>
       <tr><td>Commission de la boutique (${r.commissionTaux} %)</td><td class="n">−${eur(r.commission)}</td></tr>
       ${r.totalPenalites ? `<tr><td>Pénalités</td><td class="n">−${eur(r.totalPenalites)}</td></tr>` : ""}
+      ${r.supplement ? `<tr><td>Supplément formule sans participation à l'accueil</td><td class="n">−${eur(r.supplement)}</td></tr>` : ""}
       <tr class="tot"><td>${r.aReverser >= 0 ? "Montant reversé" : "Reste dû à la boutique"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
-    <p style="font-size:11px">Loyer du stand (${esc(r.artisan.stand || "")}, formule ${esc(r.formule)}) : ${eur(r.loyer)} par mois, réglé à l'avance selon le contrat.</p>
+    <p style="font-size:11px">Loyer de base du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer - (r.supplement || 0))} par mois, réglé à l'avance selon le contrat${r.supplement ? ` ; le supplément de ${eur(r.supplement)} de la formule sans participation est facturé ci-dessus et déduit des ventes du mois` : ""}.</p>
 
     <h2 class="page2">Détail des ventes</h2>
     <table><tr><th>Date</th><th>Ticket</th><th>Réf.</th><th>Article</th><th class="n">Qté</th><th class="n">Prix</th><th class="n">Total</th></tr>
