@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caisse – Marché des Artisans et Producteurs</title>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<style>
+  :root{--bg:#f7f3ec;--card:#fff;--ink:#2d2a26;--muted:#7a7268;--osb:#c99a5b;--osb-d:#9a6f37;--sauge:#6f8f72;--sauge-d:#4f6d52;--rouge:#b5483b;--line:#e6dfd3;--r:12px}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:var(--ink);color:#fff;padding:12px 18px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:600}
+  header .who{font-size:13px;opacity:.85}
+  nav{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;background:#ece5d8;border-bottom:1px solid var(--line)}
+  nav button{background:transparent;border:1px solid transparent;padding:8px 12px;border-radius:999px;font-size:14px;cursor:pointer;color:var(--ink)}
+  nav button.on{background:#fff;border-color:var(--line);font-weight:600}
+  main{padding:16px;max-width:1200px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px}
+  h2{font-size:18px;margin:0 0 12px}
+  h3{font-size:15px;margin:14px 0 8px}
+  label{display:block;font-size:13px;color:var(--muted);margin:8px 0 4px}
+  input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:15px;background:#fff;color:var(--ink)}
+  textarea{min-height:60px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:0;border-radius:10px;padding:10px 16px;font-size:15px;font-weight:600;cursor:pointer;background:var(--sauge);color:#fff}
+  .btn:hover{background:var(--sauge-d)}
+  .btn.osb{background:var(--osb)} .btn.osb:hover{background:var(--osb-d)}
+  .btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  .btn.danger{background:var(--rouge)}
+  .btn.small{padding:6px 10px;font-size:13px}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .row>*{flex:1;min-width:140px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:800px){.grid2{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  td.num,th.num{text-align:right;white-space:nowrap}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:14px}
+  .kpi .l{font-size:12px;color:var(--muted)} .kpi .v{font-size:22px;font-weight:700;margin-top:4px}
+  .muted{color:var(--muted);font-size:13px}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#efe7da}
+  .tag.off{background:#f3d9d5;color:var(--rouge)}
+  .login{max-width:380px;margin:40px auto}
+  .msg{padding:10px 12px;border-radius:10px;margin:10px 0;font-size:14px}
+  .msg.err{background:#f8e1dd;color:#8a2e23} .msg.ok{background:#e2efe3;color:#2f5b33}
+  /* Caisse */
+  .caisse{display:grid;grid-template-columns:1.2fr 1fr;gap:14px}
+  @media(max-width:900px){.caisse{grid-template-columns:1fr}}
+  .scan{font-size:20px;padding:14px;border:2px solid var(--osb)}
+  .results{max-height:52vh;overflow:auto;margin-top:10px}
+  .prod{display:flex;justify-content:space-between;gap:10px;padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;cursor:pointer;background:#fff}
+  .prod:hover{border-color:var(--osb)}
+  .prod b{display:block}
+  .cart-line{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+  .qty{display:flex;align-items:center;gap:4px}
+  .qty button{width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:16px;cursor:pointer}
+  .total{font-size:30px;font-weight:800;text-align:right;margin:12px 0}
+  .pay{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .pay .btn{padding:16px 8px;font-size:16px}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
+  .modal .box{background:#fff;border-radius:var(--r);padding:18px;max-width:440px;width:100%;max-height:90vh;overflow:auto}
+  .hidden{display:none!important}
+  /* Ticket */
+  #ticket{font-family:"Courier New",monospace;font-size:13px;width:72mm;margin:0 auto;color:#000}
+  #ticket .c{text-align:center} #ticket hr{border:0;border-top:1px dashed #000}
+  #ticket .l{display:flex;justify-content:space-between;gap:6px}
+  /* Étiquettes */
+  #labels{display:flex;flex-wrap:wrap;gap:6px}
+  .label{width:62mm;border:1px dashed #bbb;padding:6px;text-align:center;font-size:11px;background:#fff}
+  .label .p{font-size:15px;font-weight:700}
+  @media print{
+    body *{visibility:hidden}
+    .print-zone,.print-zone *{visibility:visible}
+    .print-zone{position:absolute;left:0;top:0;width:100%}
+    .modal{background:none}
+    .label{border:0;break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="titre">Marché des Artisans et Producteurs</h1>
+  <div class="who"><span id="who"></span> <button class="btn small ghost hidden" id="btnLogout">Se déconnecter</button></div>
+</header>
+<nav id="nav" class="hidden"></nav>
+<main id="app"></main>
+
+<div class="modal hidden" id="modal"><div class="box" id="modalBox"></div></div>
+
+<script>
+// ================== Outils ==================
+const $ = (s, el = document) => el.querySelector(s);
+const app = $("#app");
+const eur = (c) => ((c || 0) / 100).toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const today = () => new Date().toISOString().slice(0, 10);
+const thisMonth = () => new Date().toISOString().slice(0, 7);
+const fdate = (iso) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
+let S = { token: localStorage.getItem("token"), role: localStorage.getItem("role"), nom: localStorage.getItem("nom"), cle: localStorage.getItem("cleCaisse"), settings: {} };
+
+async function api(path, opts = {}) {
+  const headers = { "content-type": "application/json" };
+  if (S.token) headers.authorization = "Bearer " + S.token;
+  if (S.cle) headers["x-caisse"] = S.cle;
+  const r = await fetch("/api" + path, { method: opts.method || "GET", headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 && S.token && !path.startsWith("/login")) { logout(); throw new Error("Session expirée, reconnectez-vous"); }
+  if (!r.ok) throw new Error(d.erreur || "Erreur");
+  return d;
+}
+function msg(el, text, type = "err") { el.innerHTML = text ? `<div class="msg ${type}">${esc(text)}</div>` : ""; }
+function openModal(html) { $("#modalBox").innerHTML = html; $("#modal").classList.remove("hidden"); }
+function closeModal() { $("#modal").classList.add("hidden"); $("#modal").classList.remove("print-zone"); }
+$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+
+function setNav(items, active) {
+  const nav = $("#nav");
+  nav.classList.remove("hidden");
+  nav.innerHTML = items.map(([k, l]) => `<button data-k="${k}" class="${k === active ? "on" : ""}">${l}</button>`).join("");
+  nav.querySelectorAll("button").forEach((b) => (b.onclick = () => route(b.dataset.k)));
+}
+function logout() {
+  localStorage.removeItem("token"); localStorage.removeItem("role"); localStorage.removeItem("nom");
+  S.token = S.role = S.nom = null; start();
+}
+$("#btnLogout").onclick = logout;
+
+// ================== Démarrage ==================
+async function start() {
+  try { S.settings = await api("/settings/public"); } catch {}
+  $("#titre").textContent = S.settings.nomBoutique || "Caisse";
+  document.title = "Caisse – " + (S.settings.nomBoutique || "");
+  $("#who").textContent = S.nom ? S.nom : "";
+  $("#btnLogout").classList.toggle("hidden", !S.token);
+  if (!S.token) return showLogin();
+  route(S.role === "admin" ? "dashboard" : "catalogue");
+}
+
+function showLogin() {
+  $("#nav").classList.add("hidden");
+  app.innerHTML = `
+  <div class="login card">
+    <h2>Connexion</h2>
+    <p class="muted">Artisans : connectez-vous pour gérer votre catalogue et suivre vos ventes.</p>
+    <label>Identifiant</label><input id="lid" autocomplete="username">
+    <label>Mot de passe</label><input id="lpw" type="password" autocomplete="current-password">
+    <div id="lmsg"></div>
+    <button class="btn" id="lgo" style="width:100%;margin-top:12px">Se connecter</button>
+    ${S.cle ? `<hr style="margin:18px 0;border:0;border-top:1px solid var(--line)"><button class="btn osb" id="opencaisse" style="width:100%">Ouvrir la caisse</button><p class="muted">Ce poste est activé comme caisse du magasin.</p>` : ""}
+  </div>`;
+  const go = async () => {
+    try {
+      const d = await api("/login", { method: "POST", body: { identifiant: $("#lid").value, motdepasse: $("#lpw").value } });
+      S.token = d.token; S.role = d.role; S.nom = d.nom;
+      localStorage.setItem("token", d.token); localStorage.setItem("role", d.role); localStorage.setItem("nom", d.nom);
+      start();
+    } catch (e) { msg($("#lmsg"), e.message); }
+  };
+  $("#lgo").onclick = go;
+  $("#lpw").onkeydown = (e) => e.key === "Enter" && go();
+  if ($("#opencaisse")) $("#opencaisse").onclick = () => showCaisse();
+}
+
+function route(k) {
+  const navA = [["dashboard", "Tableau de bord"], ["caisse", "Caisse"], ["ventes", "Ventes"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
+  const navR = [["catalogue", "Mon catalogue"], ["mesventes", "Mes ventes"], ["compte", "Mon compte"]];
+  if (S.role === "admin") {
+    setNav(navA, k);
+    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
+  } else {
+    setNav(navR, k);
+    ({ catalogue: artisanCatalogue, mesventes: artisanVentes, compte: compteView }[k] || artisanCatalogue)();
+  }
+}
+
+// ================== CAISSE ==================
+let CART = [], PRODS = [];
+async function showCaisse() {
+  if (!S.cle) {
+    app.innerHTML = `<div class="card"><h2>Caisse</h2><p>La caisse ne fonctionne que sur le poste du magasin.</p>
+      ${S.role === "admin" ? `<p class="muted">Si vous êtes sur l'ordinateur de la boutique, activez-le comme caisse dans <b>Paramètres</b>.</p>` : ""}</div>`;
+    return;
+  }
+  if (!S.token) { $("#nav").classList.add("hidden"); $("#btnLogout").classList.add("hidden"); }
+  app.innerHTML = `
+  <div class="caisse">
+    <div class="card">
+      <div class="row" style="align-items:center">
+        <h2 style="margin:0">Caisse</h2>
+        <div style="flex:0 0 auto" class="row">
+          <button class="btn small ghost" id="cJour">Ventes du jour</button>
+          <button class="btn small ghost" id="cReload">Actualiser les articles</button>
+          ${!S.token ? `<button class="btn small ghost" id="cQuit">Fermer la caisse</button>` : ""}
+        </div>
+      </div>
+      <input class="scan" id="scan" placeholder="Scanner ou taper une référence / un nom d'article" autofocus autocomplete="off">
+      <div id="cmsg"></div>
+      <div class="results" id="results"></div>
+    </div>
+    <div class="card">
+      <h2>Ticket en cours</h2>
+      <div id="cart"></div>
+      <div class="total" id="total">0,00 €</div>
+      <div class="pay">
+        <button class="btn" data-pay="CB">Carte</button>
+        <button class="btn osb" data-pay="Espèces">Espèces</button>
+        <button class="btn ghost" data-pay="Chèque">Chèque</button>
+      </div>
+      <button class="btn ghost small" id="cClear" style="margin-top:10px">Vider le panier</button>
+    </div>
+  </div>`;
+  $("#cReload").onclick = loadProds;
+  $("#cJour").onclick = venteDuJour;
+  if ($("#cQuit")) $("#cQuit").onclick = showLogin;
+  $("#cClear").onclick = () => { CART = []; renderCart(); };
+  document.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => payer(b.dataset.pay)));
+  const scan = $("#scan");
+  scan.oninput = () => renderResults(scan.value);
+  scan.onkeydown = (e) => {
+    if (e.key !== "Enter") return;
+    const v = scan.value.trim().toUpperCase();
+    const p = PRODS.find((x) => x.ref.toUpperCase() === v);
+    if (p) { addToCart(p); scan.value = ""; renderResults(""); }
+    else {
+      const list = filterProds(scan.value);
+      if (list.length === 1) { addToCart(list[0]); scan.value = ""; renderResults(""); }
+      else msg($("#cmsg"), list.length ? "Plusieurs articles correspondent : cliquez sur le bon." : "Référence inconnue : " + scan.value);
+    }
+  };
+  await loadProds();
+  renderCart();
+}
+async function loadProds() {
+  try { PRODS = await api("/caisse/produits"); msg($("#cmsg"), ""); renderResults($("#scan")?.value || ""); }
+  catch (e) {
+    if (/pas activé/.test(e.message)) { localStorage.removeItem("cleCaisse"); S.cle = null; }
+    msg($("#cmsg"), e.message);
+  }
+}
+function filterProds(q) {
+  q = q.trim().toLowerCase();
+  if (!q) return PRODS.slice(0, 40);
+  return PRODS.filter((p) => p.ref.toLowerCase().includes(q) || p.nom.toLowerCase().includes(q) || (p.artisanNom || "").toLowerCase().includes(q)).slice(0, 60);
+}
+function renderResults(q) {
+  const el = $("#results"); if (!el) return;
+  const list = filterProds(q);
+  el.innerHTML = list.map((p) => `
+    <div class="prod" data-ref="${esc(p.ref)}">
+      <div><b>${esc(p.nom)}</b><span class="muted">${esc(p.ref)} · ${esc(p.artisanNom)}${typeof p.stock === "number" ? " · stock " + p.stock : ""}</span></div>
+      <div><b>${eur(p.prix)}</b></div>
+    </div>`).join("") || `<p class="muted">Aucun article.</p>`;
+  el.querySelectorAll(".prod").forEach((d) => (d.onclick = () => { addToCart(PRODS.find((p) => p.ref === d.dataset.ref)); $("#scan").value = ""; renderResults(""); $("#scan").focus(); }));
+}
+function addToCart(p) {
+  const l = CART.find((x) => x.ref === p.ref);
+  if (l) l.qte++; else CART.push({ ref: p.ref, nom: p.nom, prix: p.prix, artisanNom: p.artisanNom, qte: 1 });
+  msg($("#cmsg"), ""); renderCart();
+}
+function renderCart() {
+  const el = $("#cart"); if (!el) return;
+  el.innerHTML = CART.map((l, i) => `
+    <div class="cart-line">
+      <div><b>${esc(l.nom)}</b><div class="muted">${esc(l.ref)} · ${esc(l.artisanNom)}</div></div>
+      <div class="qty"><button data-i="${i}" data-d="-1">−</button><span>${l.qte}</span><button data-i="${i}" data-d="1">+</button></div>
+      <div class="num"><b>${eur(l.prix * l.qte)}</b></div>
+      <button class="btn small ghost" data-del="${i}">✕</button>
+    </div>`).join("") || `<p class="muted">Scannez un article pour commencer.</p>`;
+  el.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const l = CART[b.dataset.i]; l.qte += +b.dataset.d; if (l.qte < 1) CART.splice(b.dataset.i, 1); renderCart(); }));
+  el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { CART.splice(b.dataset.del, 1); renderCart(); }));
+  $("#total").textContent = eur(CART.reduce((s, l) => s + l.prix * l.qte, 0));
+}
+function payer(mode) {
+  if (!CART.length) return msg($("#cmsg"), "Le panier est vide.");
+  const total = CART.reduce((s, l) => s + l.prix * l.qte, 0);
+  openModal(`
+    <h2>Paiement : ${esc(mode)}</h2>
+    <div class="total">${eur(total)}</div>
+    ${mode === "Espèces" ? `<label>Montant reçu (€)</label><input id="recu" inputmode="decimal" placeholder="ex. 50"><p id="rendu" class="muted"></p>` : ""}
+    <div id="pmsg"></div>
+    <div class="row" style="margin-top:12px"><button class="btn ghost" id="pAnn">Annuler</button><button class="btn" id="pOk">Valider l'encaissement</button></div>`);
+  if ($("#recu")) $("#recu").oninput = () => {
+    const r = Math.round(parseFloat($("#recu").value.replace(",", ".")) * 100) || 0;
+    $("#rendu").textContent = r >= total ? "À rendre : " + eur(r - total) : "";
+  };
+  $("#pAnn").onclick = closeModal;
+  $("#pOk").onclick = async () => {
+    $("#pOk").disabled = true;
+    try {
+      const v = await api("/caisse/ventes", { method: "POST", body: { lignes: CART.map((l) => ({ ref: l.ref, qte: l.qte })), paiement: { mode, recu: $("#recu")?.value || null } } });
+      CART = []; renderCart(); loadProds();
+      showTicket(v);
+    } catch (e) { msg($("#pmsg"), e.message); $("#pOk").disabled = false; }
+  };
+}
+function ticketHTML(v) {
+  const s = S.settings;
+  return `<div id="ticket">
+    <div class="c"><b>${esc(s.nomBoutique)}</b>${s.adresse ? "<br>" + esc(s.adresse) : ""}</div>
+    <div class="c">${fdate(v.date)} · Ticket ${esc(v.numero)}</div>
+    ${v.annulee ? '<div class="c"><b>*** VENTE ANNULÉE ***</b></div>' : ""}
+    <hr>
+    ${v.lignes.map((l) => `<div>${esc(l.nom)}</div>
+      <div class="l"><span>${l.qte} x ${eur(l.pu)}</span><span>${eur(l.total)}</span></div>
+      <div style="font-size:11px">Réf. ${esc(l.ref)} – vendu pour le compte de ${esc(l.artisanNom)}</div>`).join("<div style='height:4px'></div>")}
+    <hr>
+    <div class="l"><b>TOTAL</b><b>${eur(v.total)}</b></div>
+    <div class="l"><span>Payé par ${esc(v.paiement.mode)}</span><span></span></div>
+    ${v.paiement.recu ? `<div class="l"><span>Reçu</span><span>${eur(v.paiement.recu)}</span></div><div class="l"><span>Rendu</span><span>${eur(v.paiement.recu - v.total)}</span></div>` : ""}
+    <hr>
+    <div class="c" style="font-size:11px">Articles vendus au nom et pour le compte des artisans et producteurs indiqués.<br>Merci de votre visite !</div>
+  </div>`;
+}
+function showTicket(v) {
+  openModal(`${ticketHTML(v)}<div class="row" style="margin-top:14px"><button class="btn ghost" id="tClose">Fermer</button><button class="btn" id="tPrint">Imprimer le ticket</button></div>`);
+  $("#tClose").onclick = () => { closeModal(); $("#scan")?.focus(); };
+  $("#tPrint").onclick = () => { $("#modal").classList.add("print-zone"); window.print(); $("#modal").classList.remove("print-zone"); };
+}
+async function venteDuJour() {
+  try {
+    const d = await api("/caisse/jour?date=" + today());
+    openModal(`<h2>Ventes du ${new Date().toLocaleDateString("fr-FR")}</h2>
+      <div class="kpis"><div class="kpi"><div class="l">Total</div><div class="v">${eur(d.total)}</div></div><div class="kpi"><div class="l">Tickets</div><div class="v">${d.nbVentes}</div></div></div>
+      ${Object.entries(d.parMode).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><b style="text-align:right">${eur(v)}</b></div>`).join("")}
+      <h3>Tickets</h3>
+      <table>${d.ventes.map((v) => `<tr><td>${new Date(v.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</td><td>${v.lignes.reduce((s, l) => s + l.qte, 0)} art.</td><td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td></tr>`).join("") || "<tr><td>Aucune vente</td></tr>"}</table>
+      <button class="btn ghost" style="margin-top:12px" onclick="closeModal()">Fermer</button>`);
+  } catch (e) { msg($("#cmsg"), e.message); }
+}
+
+// ================== ESPACE ARTISAN ==================
+async function artisanCatalogue() {
+  app.innerHTML = `<div class="grid2">
+    <div class="card"><h2 id="fTitle">Ajouter un article</h2>
+      <p class="muted">La référence est créée automatiquement avec vos initiales.</p>
+      <label>Nom de l'article *</label><input id="fNom">
+      <div class="row"><div><label>Prix de vente TTC (€) *</label><input id="fPrix" inputmode="decimal"></div>
+      <div><label>Stock (vide = non suivi)</label><input id="fStock" inputmode="numeric"></div></div>
+      <label>Catégorie</label><input id="fCat" placeholder="ex. bijoux, miel, bougies…">
+      <label>Description</label><textarea id="fDesc"></textarea>
+      <div id="fmsg"></div>
+      <div class="row" style="margin-top:10px"><button class="btn ghost hidden" id="fCancel">Annuler la modification</button><button class="btn" id="fSave">Enregistrer l'article</button></div>
+    </div>
+    <div class="card"><div class="row" style="align-items:center"><h2 style="margin:0">Mes articles</h2><button class="btn small osb" id="labelsBtn" style="flex:0 0 auto">Imprimer des étiquettes</button></div>
+      <input id="fSearch" placeholder="Rechercher" style="margin-top:10px">
+      <div id="plist" style="margin-top:8px"></div></div>
+  </div>`;
+  let PR = [], editing = null;
+  const reset = () => { editing = null; ["fNom", "fPrix", "fStock", "fCat", "fDesc"].forEach((i) => ($("#" + i).value = "")); $("#fTitle").textContent = "Ajouter un article"; $("#fCancel").classList.add("hidden"); };
+  const load = async () => { PR = await api("/produits"); render(); };
+  const render = () => {
+    const q = $("#fSearch").value.toLowerCase();
+    const list = PR.filter((p) => !q || p.nom.toLowerCase().includes(q) || p.ref.toLowerCase().includes(q));
+    $("#plist").innerHTML = `<table><tr><th>Réf.</th><th>Article</th><th class="num">Prix</th><th class="num">Stock</th><th></th></tr>
+      ${list.map((p) => `<tr><td><b>${esc(p.ref)}</b></td><td>${esc(p.nom)}${p.actif === false ? ' <span class="tag off">retiré</span>' : ""}<div class="muted">${esc(p.categorie)}</div></td>
+        <td class="num">${eur(p.prix)}</td><td class="num">${p.stock ?? "–"}</td>
+        <td class="num"><button class="btn small ghost" data-e="${esc(p.ref)}">Modifier</button>
+        ${p.actif === false ? `<button class="btn small" data-on="${esc(p.ref)}">Remettre</button>` : `<button class="btn small ghost" data-off="${esc(p.ref)}">Retirer</button>`}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Aucun article pour l'instant.</td></tr>`}</table>`;
+    $("#plist").querySelectorAll("[data-e]").forEach((b) => (b.onclick = () => {
+      const p = PR.find((x) => x.ref === b.dataset.e); editing = p.ref;
+      $("#fNom").value = p.nom; $("#fPrix").value = (p.prix / 100).toFixed(2).replace(".", ","); $("#fStock").value = p.stock ?? ""; $("#fCat").value = p.categorie || ""; $("#fDesc").value = p.description || "";
+      $("#fTitle").textContent = "Modifier " + p.ref; $("#fCancel").classList.remove("hidden"); window.scrollTo(0, 0);
+    }));
+    $("#plist").querySelectorAll("[data-off]").forEach((b) => (b.onclick = async () => { await api("/produits/" + b.dataset.off, { method: "PUT", body: { actif: false } }); load(); }));
+    $("#plist").querySelectorAll("[data-on]").forEach((b) => (b.onclick = async () => { await api("/produits/" + b.dataset.on, { method: "PUT", body: { actif: true } }); load(); }));
+  };
+  $("#fSearch").oninput = render;
+  $("#fCancel").onclick = reset;
+  $("#fSave").onclick = async () => {
+    const body = { nom: $("#fNom").value, prix: $("#fPrix").value, stock: $("#fStock").value, categorie: $("#fCat").value, description: $("#fDesc").value };
+    try {
+      const p = editing ? await api("/produits/" + editing, { method: "PUT", body }) : await api("/produits", { method: "POST", body });
+      msg($("#fmsg"), (editing ? "Article modifié : " : "Article créé avec la référence ") + p.ref, "ok"); reset(); load();
+    } catch (e) { msg($("#fmsg"), e.message); }
+  };
+  $("#labelsBtn").onclick = () => printLabels(PR.filter((p) => p.actif !== false));
+  load();
+}
+
+function printLabels(list) {
+  openModal(`<h2>Étiquettes</h2><p class="muted">Indiquez le nombre d'étiquettes par article, puis imprimez.</p>
+    <table>${list.map((p, i) => `<tr><td><b>${esc(p.ref)}</b> ${esc(p.nom)}</td><td style="width:80px"><input type="number" min="0" value="${typeof p.stock === "number" ? p.stock : 1}" data-n="${i}"></td></tr>`).join("")}</table>
+    <div class="row" style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">Fermer</button><button class="btn" id="lgo2">Préparer l'impression</button></div>
+    <div id="labels" style="margin-top:14px"></div>`);
+  $("#lgo2").onclick = () => {
+    const zone = $("#labels"); zone.innerHTML = "";
+    document.querySelectorAll("[data-n]").forEach((inp) => {
+      const p = list[inp.dataset.n];
+      for (let k = 0; k < (+inp.value || 0); k++) {
+        const d = document.createElement("div"); d.className = "label";
+        d.innerHTML = `<div>${esc(S.nom || "")}</div><div><b>${esc(p.nom)}</b></div><svg></svg><div class="p">${eur(p.prix)}</div>`;
+        zone.appendChild(d);
+        try { JsBarcode(d.querySelector("svg"), p.ref, { format: "CODE128", height: 40, width: 1.6, fontSize: 12, margin: 2 }); } catch {}
+      }
+    });
+    $("#modal").classList.add("print-zone"); setTimeout(() => { window.print(); $("#modal").classList.remove("print-zone"); }, 300);
+  };
+}
+
+async function artisanVentes() {
+  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div></div></div><div id="vres"></div>`;
+  const load = async () => {
+    const d = await api("/stats?mois=" + $("#mois").value);
+    $("#vres").innerHTML = `
+      <div class="kpis">
+        <div class="kpi"><div class="l">Mes ventes du mois</div><div class="v">${eur(d.moi.ca)}</div></div>
+        <div class="kpi"><div class="l">Articles vendus</div><div class="v">${d.moi.articles}</div></div>
+        <div class="kpi"><div class="l">Commission boutique (${d.commissionTaux} %)</div><div class="v">${eur(d.moi.commission)}</div></div>
+        <div class="kpi"><div class="l">Montant qui me revient</div><div class="v">${eur(d.moi.net)}</div></div>
+        <div class="kpi"><div class="l">Chiffre d'affaires total du magasin</div><div class="v">${eur(d.totalMagasin)}</div></div>
+      </div>
+      <div class="card"><h2>Détail de mes ventes</h2><table><tr><th>Date</th><th>Réf.</th><th>Article</th><th class="num">Qté</th><th class="num">Total</th></tr>
+      ${d.lignes.map((l) => `<tr><td>${fdate(l.date)}</td><td>${esc(l.ref)}</td><td>${esc(l.nom)}</td><td class="num">${l.qte}</td><td class="num">${eur(l.total)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Aucune vente ce mois-ci.</td></tr>`}</table></div>`;
+  };
+  $("#mois").onchange = load; load();
+}
+
+function compteView() {
+  const isAdm = S.role === "admin";
+  app.innerHTML = `<div class="card" style="max-width:460px"><h2>Changer mon mot de passe</h2>
+    ${isAdm ? "" : `<label>Mot de passe actuel</label><input type="password" id="pa">`}
+    <label>Nouveau mot de passe (6 caractères min.)</label><input type="password" id="pn">
+    <div id="pm"></div><button class="btn" id="pgo" style="margin-top:10px">Enregistrer</button></div>`;
+  $("#pgo").onclick = async () => {
+    try { await api("/motdepasse", { method: "POST", body: { actuel: $("#pa")?.value, nouveau: $("#pn").value } }); msg($("#pm"), "Mot de passe modifié.", "ok"); }
+    catch (e) { msg($("#pm"), e.message); }
+  };
+}
+
+// ================== ESPACE GÉRANCE ==================
+async function adminDashboard() {
+  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div></div></div><div id="dres"></div>`;
+  const load = async () => {
+    const d = await api("/stats?mois=" + $("#mois").value);
+    const comm = d.parArtisan.reduce((s, r) => s + r.commission, 0);
+    $("#dres").innerHTML = `
+      <div class="kpis">
+        <div class="kpi"><div class="l">CA du magasin</div><div class="v">${eur(d.totalMagasin)}</div></div>
+        <div class="kpi"><div class="l">Tickets</div><div class="v">${d.nbVentes}</div></div>
+        <div class="kpi"><div class="l">Panier moyen</div><div class="v">${eur(d.nbVentes ? Math.round(d.totalMagasin / d.nbVentes) : 0)}</div></div>
+        <div class="kpi"><div class="l">Commissions (${d.commissionTaux} %)</div><div class="v">${eur(comm)}</div></div>
+        <div class="kpi"><div class="l">À reverser aux artisans</div><div class="v">${eur(d.totalMagasin - comm)}</div></div>
+      </div>
+      <div class="card"><h2>Relevé par artisan</h2>
+      <table><tr><th>Artisan</th><th class="num">Articles</th><th class="num">Ventes</th><th class="num">Commission</th><th class="num">À reverser</th></tr>
+      ${d.parArtisan.map((r) => `<tr><td>${esc(r.artisanNom)}</td><td class="num">${r.articles}</td><td class="num">${eur(r.ca)}</td><td class="num">${eur(r.commission)}</td><td class="num"><b>${eur(r.net)}</b></td></tr>`).join("") || `<tr><td colspan="5" class="muted">Aucune vente ce mois-ci.</td></tr>`}</table>
+      <button class="btn small ghost" style="margin-top:10px" id="csv">Exporter en CSV</button></div>`;
+    $("#csv").onclick = () => {
+      const rows = [["Artisan", "Articles", "Ventes", "Commission", "A reverser"], ...d.parArtisan.map((r) => [r.artisanNom, r.articles, (r.ca / 100).toFixed(2), (r.commission / 100).toFixed(2), (r.net / 100).toFixed(2)])];
+      const blob = new Blob(["﻿" + rows.map((r) => r.join(";")).join("\n")], { type: "text/csv" });
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `releve-${d.mois}.csv`; a.click();
+    };
+  };
+  $("#mois").onchange = load; load();
+}
+
+async function adminVentes() {
+  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div></div></div><div class="card" id="vl"></div>`;
+  const load = async () => {
+    const V = await api("/ventes?mois=" + $("#mois").value);
+    $("#vl").innerHTML = `<h2>Tickets</h2><table><tr><th>Date</th><th>N°</th><th>Articles</th><th>Paiement</th><th class="num">Total</th><th></th></tr>
+      ${V.map((v, i) => `<tr><td>${fdate(v.date)}</td><td>${esc(v.numero)}</td><td>${v.lignes.map((l) => `${l.qte} × ${esc(l.nom)} <span class="muted">(${esc(l.artisanNom)})</span>`).join("<br>")}</td>
+        <td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td>
+        <td class="num"><button class="btn small ghost" data-t="${i}">Ticket</button>${v.annulee ? "" : ` <button class="btn small danger" data-a="${i}">Annuler</button>`}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucune vente.</td></tr>`}</table>`;
+    $("#vl").querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => showTicket(V[b.dataset.t])));
+    $("#vl").querySelectorAll("[data-a]").forEach((b) => (b.onclick = async () => {
+      const v = V[b.dataset.a];
+      if (!confirm("Annuler cette vente de " + eur(v.total) + " ? Le stock sera remis.")) return;
+      await api(`/ventes/${v.date.slice(0, 7)}/${v.id}/annuler`, { method: "POST" }); load();
+    }));
+  };
+  $("#mois").onchange = load; load();
+}
+
+async function adminArtisans() {
+  app.innerHTML = `<div class="grid2">
+    <div class="card"><h2>Ajouter un artisan</h2>
+      <div class="row"><div><label>Nom affiché *</label><input id="aNom" placeholder="ex. Marie Dupont – Bijoux"></div><div style="max-width:120px"><label>Initiales *</label><input id="aIni" maxlength="4" placeholder="MD"></div></div>
+      <div class="row"><div><label>Identifiant de connexion *</label><input id="aId" placeholder="ex. marie.dupont"></div><div><label>Mot de passe provisoire *</label><input id="aPw"></div></div>
+      <div class="row"><div><label>Métier</label><input id="aMet"></div><div><label>Stand</label><select id="aStand"><option>1 m</option><option>2 m</option></select></div></div>
+      <div class="row"><div><label>Téléphone</label><input id="aTel"></div><div><label>E-mail</label><input id="aMail"></div></div>
+      <div id="amsg"></div><button class="btn" id="aGo" style="margin-top:10px">Créer le compte</button>
+      <p class="muted">Les références de ses articles commenceront par ses initiales (ex. MD001).</p></div>
+    <div class="card"><h2>Artisans</h2><div id="alist"></div></div></div>`;
+  const load = async () => {
+    const A = await api("/artisans");
+    $("#alist").innerHTML = `<table><tr><th>Artisan</th><th>Identifiant</th><th>Stand</th><th></th></tr>
+      ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}</td>
+      <td class="num"><button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
+    $("#alist").querySelectorAll("[data-pw]").forEach((b) => (b.onclick = async () => {
+      const pw = prompt("Nouveau mot de passe (6 caractères min.) :"); if (!pw) return;
+      try { await api("/artisans/" + b.dataset.pw, { method: "PUT", body: { motdepasse: pw } }); alert("Mot de passe modifié."); } catch (e) { alert(e.message); }
+    }));
+    $("#alist").querySelectorAll("[data-act]").forEach((b) => (b.onclick = async () => { await api("/artisans/" + b.dataset.act, { method: "PUT", body: { actif: b.dataset.v === "1" } }); load(); }));
+  };
+  $("#aGo").onclick = async () => {
+    try {
+      const a = await api("/artisans", { method: "POST", body: { nom: $("#aNom").value, initiales: $("#aIni").value, identifiant: $("#aId").value, motdepasse: $("#aPw").value, metier: $("#aMet").value, stand: $("#aStand").value, telephone: $("#aTel").value, email: $("#aMail").value } });
+      msg($("#amsg"), `Compte créé : identifiant « ${a.identifiant} », initiales ${a.initiales}.`, "ok");
+      ["aNom", "aIni", "aId", "aPw", "aMet", "aTel", "aMail"].forEach((i) => ($("#" + i).value = "")); load();
+    } catch (e) { msg($("#amsg"), e.message); }
+  };
+  load();
+}
+
+async function adminProduits() {
+  app.innerHTML = `<div class="card"><h2>Catalogue complet</h2><input id="q" placeholder="Rechercher un article, une référence, un artisan"><div id="pl" style="margin-top:10px"></div></div>`;
+  const [P, A] = await Promise.all([api("/produits"), api("/artisans")]);
+  const noms = Object.fromEntries(A.map((a) => [a.id, a.nom]));
+  const render = () => {
+    const q = $("#q").value.toLowerCase();
+    const list = P.filter((p) => !q || p.nom.toLowerCase().includes(q) || p.ref.toLowerCase().includes(q) || (noms[p.artisanId] || "").toLowerCase().includes(q));
+    $("#pl").innerHTML = `<table><tr><th>Réf.</th><th>Article</th><th>Artisan</th><th class="num">Prix</th><th class="num">Stock</th></tr>
+      ${list.map((p) => `<tr><td><b>${esc(p.ref)}</b></td><td>${esc(p.nom)}${p.actif === false ? ' <span class="tag off">retiré</span>' : ""}</td><td>${esc(noms[p.artisanId])}</td><td class="num">${eur(p.prix)}</td><td class="num">${p.stock ?? "–"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Aucun article.</td></tr>`}</table>`;
+  };
+  $("#q").oninput = render; render();
+}
+
+async function adminParametres() {
+  const s = await api("/settings");
+  const postes = await api("/postes");
+  app.innerHTML = `<div class="grid2">
+    <div class="card"><h2>Boutique</h2>
+      <label>Nom de la boutique (affiché sur les tickets)</label><input id="sNom" value="${esc(s.nomBoutique)}">
+      <label>Adresse (ticket)</label><input id="sAdr" value="${esc(s.adresse)}">
+      <label>Commission de la boutique (%)</label><input id="sCom" type="number" value="${s.commission}">
+      <div id="smsg"></div><button class="btn" id="sGo" style="margin-top:10px">Enregistrer</button></div>
+    <div class="card"><h2>Poste caisse</h2>
+      <p class="muted">L'encaissement ne fonctionne que sur un poste activé. Activez uniquement l'ordinateur ou la tablette de la boutique.</p>
+      <p>Ce poste : ${S.cle ? '<span class="tag">activé comme caisse</span>' : '<span class="tag off">non activé</span>'}</p>
+      ${S.cle ? `<button class="btn ghost" id="desact">Désactiver ce poste</button>` : `<label>Nom du poste</label><input id="pNom" value="Caisse boutique"><button class="btn osb" id="act" style="margin-top:10px">Activer ce poste comme caisse</button>`}
+      <h3>Postes activés</h3>
+      <table>${postes.filter((p) => !p.revoque).map((p) => `<tr><td>${esc(p.nom)}<div class="muted">depuis le ${fdate(p.creeLe)}</div></td><td class="num"><button class="btn small danger" data-rev="${p.id}">Révoquer</button></td></tr>`).join("") || "<tr><td class='muted'>Aucun poste.</td></tr>"}</table>
+    </div>
+    <div class="card"><h2>Mot de passe gérance</h2><label>Nouveau mot de passe</label><input type="password" id="apw"><div id="apm"></div><button class="btn" id="apgo" style="margin-top:10px">Changer</button></div></div>`;
+  $("#sGo").onclick = async () => {
+    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
+    catch (e) { msg($("#smsg"), e.message); }
+  };
+  if ($("#act")) $("#act").onclick = async () => {
+    const d = await api("/postes", { method: "POST", body: { nom: $("#pNom").value } });
+    localStorage.setItem("cleCaisse", d.cle); S.cle = d.cle; adminParametres();
+  };
+  if ($("#desact")) $("#desact").onclick = () => { localStorage.removeItem("cleCaisse"); S.cle = null; adminParametres(); };
+  document.querySelectorAll("[data-rev]").forEach((b) => (b.onclick = async () => { if (!confirm("Révoquer ce poste caisse ?")) return; await api("/postes/" + b.dataset.rev, { method: "DELETE" }); adminParametres(); }));
+  $("#apgo").onclick = async () => {
+    try { await api("/motdepasse", { method: "POST", body: { nouveau: $("#apw").value } }); msg($("#apm"), "Mot de passe modifié.", "ok"); } catch (e) { msg($("#apm"), e.message); }
+  };
+}
+
+start();
+</script>
+</body>
+</html>
