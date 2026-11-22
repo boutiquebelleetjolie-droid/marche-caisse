@@ -302,6 +302,7 @@ export default async (req) => {
         return json(o);
       }
       if (path === "/caisse/sortie" && m === "POST") {
+        if (auth(req)?.role !== "admin") return err("Les sorties d'espèces sont réservées à la gérance", 403);
         const jour = parisDate(new Date().toISOString());
         const montant = toCents(body.montant);
         if (!(montant > 0) || !String(body.motif || "").trim()) return err("Montant et motif obligatoires");

@@ -202,7 +202,7 @@ async function showCaisse() {
         <h2 style="margin:0">Caisse</h2>
         <div style="flex:0 0 auto" class="row">
           <button class="btn small ghost" id="cJour">Ventes du jour</button>
-          <button class="btn small ghost" id="cSortie">Sortie d'espèces</button>
+          ${S.role === "admin" && S.token ? `<button class="btn small ghost" id="cSortie">Sortie d'espèces</button>` : ""}
           <button class="btn small" id="cZ">Clôture / Ticket Z</button>
           <button class="btn small osb" id="cEtiq">Étiquettes</button>
           <button class="btn small ghost" id="cReload">Actualiser les articles</button>
@@ -230,7 +230,7 @@ async function showCaisse() {
   </div>`;
   $("#cReload").onclick = loadProds;
   $("#cJour").onclick = venteDuJour;
-  $("#cSortie").onclick = sortieEspeces;
+  if ($("#cSortie")) $("#cSortie").onclick = sortieEspeces;
   $("#cZ").onclick = clotureCaisse;
   loadSession();
   $("#cEtiq").onclick = () => printLabels(PRODS);
@@ -452,7 +452,7 @@ function ouvertureCaisse() {
 }
 function sortieEspeces() {
   openModal(`<h2>Sortie d'espèces</h2><p class="muted">Argent pris dans le tiroir (achat de fournitures, timbres…). Elle apparaîtra sur le ticket Z.</p>
-    <label>Montant (€)</label><input id="soMt" inputmode="decimal"><label>Motif</label><input id="soMo"><label>Votre nom</label><input id="soVe">
+    <label>Montant (€)</label><input id="soMt" inputmode="decimal"><label>Motif</label><input id="soMo"><input type="hidden" id="soVe" value="Gérance">
     <div id="somsg"></div><div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="soGo">Enregistrer</button></div>`);
   $("#soGo").onclick = async () => {
     try { await api("/caisse/sortie", { method: "POST", body: { montant: $("#soMt").value, motif: $("#soMo").value, vendeur: $("#soVe").value } }); closeModal(); loadSession(); }
