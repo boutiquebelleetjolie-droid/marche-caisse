@@ -706,7 +706,8 @@ async function imprimerReleve(mois, artisanId) {
       <tr><td>Commission de la boutique (${r.commissionTaux} %)</td><td class="n">−${eur(r.commission)}</td></tr>
       ${r.totalPenalites ? `<tr><td>Pénalités</td><td class="n">−${eur(r.totalPenalites)}</td></tr>` : ""}
       ${r.supplement ? `<tr><td>Supplément formule sans participation à l'accueil</td><td class="n">−${eur(r.supplement)}</td></tr>` : ""}
-      <tr class="tot"><td>${r.aReverser >= 0 ? "Montant reversé" : "Reste dû à la boutique"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
+      ${r.report ? `<tr><td>Reste dû du mois précédent (reporté)</td><td class="n">−${eur(r.report)}</td></tr>` : ""}
+      <tr class="tot"><td>${r.aReverser >= 0 ? "Montant reversé" : "Reste dû à la boutique (reporté sur le mois suivant)"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
     <p style="font-size:11px">Loyer de base du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer - (r.supplement || 0))} par mois, réglé à l'avance selon le contrat${r.supplement ? ` ; le supplément de ${eur(r.supplement)} de la formule sans participation est facturé ci-dessus et déduit des ventes du mois` : ""}.</p>
 
     <h2 class="page2">Détail des ventes</h2>

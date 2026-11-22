@@ -228,21 +228,32 @@ async function artisanParInitiales(ini) {
   return (await listJSON("artisans/")).find((a) => a.initiales === I && a.actif);
 }
 // Relevé mensuel + facture de commission d'un artisan
-async function releve(mois, artisanId) {
-  const s = await getSettings();
-  const a = await getJSON(`artisans/${artisanId}`);
-  if (!a) throw new UErr("Artisan introuvable");
+// Calcul d'un mois pour un artisan, avec report de ce qui restait dû le mois précédent
+function moisPrecedent(mois) { const [y, m] = mois.split("-").map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`; }
+async function calculMois(mois, a, s) {
   const [y, m] = mois.split("-").map(Number);
   const du = `${mois}-01`, au = `${mois}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
   const ventes = (await ventesEntre(du, au)).filter((v) => !v.annulee);
   const lignes = [];
-  for (const v of ventes) for (const l of v.lignes) if (l.artisanId === artisanId) lignes.push({ date: v.date, ticket: v.numero, ref: l.ref, nom: l.nom, qte: l.qte, pu: l.pu, total: l.total });
+  for (const v of ventes) for (const l of v.lignes) if (l.artisanId === a.id) lignes.push({ date: v.date, ticket: v.numero, ref: l.ref, nom: l.nom, qte: l.qte, pu: l.pu, total: l.total });
   lignes.sort((p, q) => p.date.localeCompare(q.date));
   const ca = lignes.reduce((t, l) => t + l.total, 0);
   const commission = Math.round((ca * s.commission) / 100);
-  const penalites = [], totalPenalites = 0;
-  const sansAccueil = a.formule === "sans accueil" && (!a.formuleDepuis || `${mois}-01` >= a.formuleDepuis);
-  const loyer = (a.stand === "2 m" ? s.prixStand2 : s.prixStand1) + (sansAccueil ? s.supplementSansAccueil : 0);
+  const sansAccueil = a.formule === "sans accueil" && (!a.formuleDepuis || du >= a.formuleDepuis);
+  const supplement = sansAccueil ? s.supplementSansAccueil : 0;
+  // report : uniquement à partir du mois de début du contrat (ou de création du compte)
+  const debut = (a.dateDebut || a.creeLe || du).slice(0, 7);
+  let report = 0;
+  const prev = moisPrecedent(mois);
+  if (prev >= debut) { const p = await calculMois(prev, a, s); if (p.solde < 0) report = -p.solde; }
+  return { du, au, lignes, ca, commission, supplement, sansAccueil, report, solde: ca - commission - supplement - report };
+}
+async function releve(mois, artisanId) {
+  const s = await getSettings();
+  const a = await getJSON(`artisans/${artisanId}`);
+  if (!a) throw new UErr("Artisan introuvable");
+  const c = await calculMois(mois, a, s);
+  const loyer = (a.stand === "2 m" ? s.prixStand2 : s.prixStand1) + c.supplement;
   // numéro de facture attribué une seule fois par artisan et par mois
   let fac = await getJSON(`factures/${mois}/${artisanId}`);
   if (!fac) {
@@ -252,11 +263,11 @@ async function releve(mois, artisanId) {
     await setJSON(`factures/${mois}/${artisanId}`, fac);
   }
   return {
-    mois, du, au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA },
+    mois, du: c.du, au: c.au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA },
     artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand },
-    lignes, ca, commissionTaux: s.commission, commission, penalites, totalPenalites, loyer, formule: sansAccueil ? "sans participation à l'accueil" : "avec participation à l'accueil",
-    supplement: sansAccueil ? s.supplementSansAccueil : 0,
-    aReverser: ca - commission - totalPenalites - (sansAccueil ? s.supplementSansAccueil : 0), facture: fac,
+    lignes: c.lignes, ca: c.ca, commissionTaux: s.commission, commission: c.commission, penalites: [], totalPenalites: 0, loyer,
+    formule: c.sansAccueil ? "sans participation à l'accueil" : "avec participation à l'accueil",
+    supplement: c.supplement, report: c.report, aReverser: c.solde, facture: fac,
   };
 }
 
