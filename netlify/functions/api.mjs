@@ -33,6 +33,9 @@ const uid = () => crypto.randomUUID();
 const moisDe = (iso) => iso.slice(0, 7);
 const toCents = (v) => Math.round(Number(String(v).replace(",", ".")) * 100);
 
+// Article propre à la boutique (hors artisans) : le sac
+const SAC = { ref: "SAC", nom: "Sac", prix: 20, artisanId: "boutique", actif: true, stock: null };
+async function getProduit(ref) { return String(ref).toUpperCase() === "SAC" ? SAC : await getJSON(`products/${ref}`); }
 async function getJSON(key) { return await store().get(key, { type: "json" }); }
 async function setJSON(key, v) { await store().setJSON(key, v); }
 async function listJSON(prefix) {
@@ -211,7 +214,7 @@ function resumeParArtisan(ventes, taux) {
     }
   }
   for (const r of Object.values(par)) {
-    r.commission = Math.round((r.ca * taux) / 100);
+    r.commission = r.artisanId === "boutique" ? r.ca : Math.round((r.ca * taux) / 100);
     r.net = r.ca - r.commission;
   }
   return { total, par: Object.values(par).sort((a, b) => b.ca - a.ca) };
@@ -257,7 +260,7 @@ export default async (req) => {
       if (path === "/caisse/produits" && m === "GET") {
         const [prods, arts] = await Promise.all([listJSON("products/"), listJSON("artisans/")]);
         const noms = Object.fromEntries(arts.map((a) => [a.id, a.nom]));
-        return json(prods.filter((p) => p.actif !== false).map((p) => ({ ...p, artisanNom: noms[p.artisanId] || "" })));
+        return json([{ ...SAC, artisanNom: "Boutique" }, ...prods.filter((p) => p.actif !== false).map((p) => ({ ...p, artisanNom: noms[p.artisanId] || "" }))]);
       }
 
       if (path === "/caisse/ventes" && m === "POST") {
@@ -266,10 +269,11 @@ export default async (req) => {
         const arts = Object.fromEntries((await listJSON("artisans/")).map((a) => [a.id, a]));
         const lignes = [];
         for (const l of lignesIn) {
-          const p = await getJSON(`products/${l.ref}`);
+          const p = await getProduit(l.ref);
           if (!p) return err(`Article inconnu : ${l.ref}`);
           const qte = Math.max(1, parseInt(l.qte, 10) || 1);
-          lignes.push({ ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom: arts[p.artisanId]?.nom || "", qte, pu: p.prix, total: p.prix * qte });
+          const artisanNom = p.artisanId === "boutique" ? "Boutique" : arts[p.artisanId]?.nom || "";
+          lignes.push({ ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom, qte, pu: p.prix, total: p.prix * qte });
         }
         const total = lignes.reduce((s, l) => s + l.total, 0);
         const pay = body.paiement || {};
@@ -505,10 +509,10 @@ export default async (req) => {
         const qte = Math.max(0, parseInt(l.qte, 10) || 0);
         if (!qte) continue;
         const exist = v.lignes.find((x) => x.ref === l.ref);
-        const p = exist ? null : await getJSON(`products/${l.ref}`);
+        const p = exist ? null : await getProduit(l.ref);
         if (!exist && !p) return err(`Article inconnu : ${l.ref}`);
         const pu = l.pu != null && l.pu !== "" ? toCents(l.pu) : exist ? exist.pu : p.prix;
-        const base = exist || { ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom: arts[p.artisanId]?.nom || "" };
+        const base = exist || { ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom: p.artisanId === "boutique" ? "Boutique" : arts[p.artisanId]?.nom || "" };
         nouvelles.push({ ...base, qte, pu, total: pu * qte });
       }
       if (!nouvelles.length) return err("Le ticket doit garder au moins un article (sinon, annulez-le)");

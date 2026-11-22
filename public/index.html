@@ -210,6 +210,7 @@ async function showCaisse() {
         </div>
       </div>
       <div id="cSession"></div>
+      <div class="row" style="margin-bottom:8px"><button class="btn osb" id="cSac" style="flex:0 0 auto">+ Sac 0,20 €</button></div>
       <input class="scan" id="scan" placeholder="Scanner ou taper une référence / un nom d'article" autofocus autocomplete="off">
       <div id="cmsg"></div>
       <div class="results" id="results"></div>
@@ -233,10 +234,11 @@ async function showCaisse() {
   if ($("#cSortie")) $("#cSortie").onclick = sortieEspeces;
   $("#cZ").onclick = clotureCaisse;
   loadSession();
-  $("#cEtiq").onclick = () => printLabels(PRODS);
+  $("#cEtiq").onclick = () => printLabels(PRODS.filter((p) => p.ref !== "SAC"));
   if ($("#cQuit")) $("#cQuit").onclick = showLogin;
   $("#cClear").onclick = () => { if (!CART.length) return; justifier("Vider le panier", { type: "panier", detail: CART.map((l) => l.qte + " × " + l.nom).join(", "), montant: CART.reduce((t, l) => t + l.prix * l.qte, 0) }, () => { CART = []; renderCart(); }); };
   $("#cAtt").onclick = mettreEnAttente;
+  $("#cSac").onclick = () => { const p = PRODS.find((x) => x.ref === "SAC"); if (p) addToCart(p); $("#scan").focus(); };
   $("#cAttList").onclick = listeAttente;
   document.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => payer(b.dataset.pay)));
   const scan = $("#scan");
