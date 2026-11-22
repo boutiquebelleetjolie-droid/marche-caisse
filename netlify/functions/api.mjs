@@ -55,7 +55,7 @@ async function getSettings() {
     mentionTVA: "TVA non applicable, art. 293 B du CGI",
     prixStand1: 10000,
     prixStand2: 18000,
-    penalite: 8000,
+    supplementSansAccueil: 5000,
     ...((await getJSON("settings")) || {}),
   };
 }
@@ -240,9 +240,9 @@ async function releve(mois, artisanId) {
   lignes.sort((p, q) => p.date.localeCompare(q.date));
   const ca = lignes.reduce((t, l) => t + l.total, 0);
   const commission = Math.round((ca * s.commission) / 100);
-  const penalites = (await listJSON(`penalites/${mois}/`)).filter((x) => x.artisanId === artisanId);
-  const totalPenalites = penalites.reduce((t, x) => t + x.montant, 0);
-  const loyer = a.stand === "2 m" ? s.prixStand2 : s.prixStand1;
+  const penalites = [], totalPenalites = 0;
+  const sansAccueil = a.formule === "sans accueil" && (!a.formuleDepuis || `${mois}-01` >= a.formuleDepuis);
+  const loyer = (a.stand === "2 m" ? s.prixStand2 : s.prixStand1) + (sansAccueil ? s.supplementSansAccueil : 0);
   // numéro de facture attribué une seule fois par artisan et par mois
   let fac = await getJSON(`factures/${mois}/${artisanId}`);
   if (!fac) {
@@ -254,7 +254,7 @@ async function releve(mois, artisanId) {
   return {
     mois, du, au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA },
     artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand },
-    lignes, ca, commissionTaux: s.commission, commission, penalites, totalPenalites, loyer,
+    lignes, ca, commissionTaux: s.commission, commission, penalites, totalPenalites, loyer, formule: sansAccueil ? "sans participation à l'accueil" : "avec participation à l'accueil",
     aReverser: ca - commission - totalPenalites, facture: fac,
   };
 }
@@ -566,8 +566,14 @@ export default async (req) => {
       if (e.absent) return json(e);
       e.absent = true;
       await setJSON(key, e);
-      const pen = { id: uid(), artisanId: e.artisanId, nom: e.nom, date: e.date, creneau: e.creneau, montant: settings.penalite, motif: "Permanence non assurée" };
-      await setJSON(`penalites/${e.date.slice(0, 7)}/${pen.id}`, pen);
+      const art = await getJSON(`artisans/${e.artisanId}`);
+      if (art && art.formule !== "sans accueil") {
+        const [y, mo] = e.date.split("-").map(Number);
+        art.formule = "sans accueil";
+        art.formuleDepuis = `${mo === 12 ? y + 1 : y}-${String(mo === 12 ? 1 : mo + 1).padStart(2, "0")}-01`;
+        await setJSON(`artisans/${art.id}`, art);
+        await journaliser({ type: "Passage en formule sans participation à l'accueil", detail: `${art.nom} – créneau du ${e.date} non assuré, à partir du ${art.formuleDepuis}`, montant: settings.supplementSansAccueil, motif: "", par: "Gérance" });
+      }
       return json(e);
     }
     if (path === "/penalites" && m === "GET") {
@@ -635,7 +641,7 @@ export default async (req) => {
       const a = {
         id: uid(), nom, initiales, identifiant, pw: hashPw(body.motdepasse),
         metier: String(body.metier || "").trim(), telephone: String(body.telephone || "").trim(), email: String(body.email || "").trim(),
-        stand: String(body.stand || "1 m"), dateDebut: String(body.dateDebut || "").slice(0, 10), actif: true, nextRef: 1, creeLe: new Date().toISOString(),
+        stand: String(body.stand || "1 m"), formule: body.formule === "sans accueil" ? "sans accueil" : "avec accueil", dateDebut: String(body.dateDebut || "").slice(0, 10), actif: true, nextRef: 1, creeLe: new Date().toISOString(),
       };
       await setJSON(`artisans/${a.id}`, a);
       return json(publicArtisan(a));
@@ -644,7 +650,7 @@ export default async (req) => {
     if (mArt && m === "PUT") {
       const a = await getJSON(`artisans/${mArt[1]}`);
       if (!a) return err("Artisan introuvable", 404);
-      for (const k of ["nom", "metier", "telephone", "email", "stand", "dateDebut"]) if (body[k] != null) a[k] = String(body[k]).trim();
+      for (const k of ["nom", "metier", "telephone", "email", "stand", "dateDebut", "formule", "formuleDepuis"]) if (body[k] != null) a[k] = String(body[k]).trim();
       if (body.actif != null) a.actif = !!body.actif;
       if (body.motdepasse) { if (String(body.motdepasse).length < 6) return err("Mot de passe : 6 caractères minimum"); a.pw = hashPw(body.motdepasse); }
       await setJSON(`artisans/${a.id}`, a);
@@ -712,7 +718,7 @@ export default async (req) => {
       if (body.commission != null) s.commission = Math.min(100, Math.max(0, Number(body.commission) || 0));
       if (body.fondReserve != null && body.fondReserve !== "") s.fondReserve = Math.max(0, toCents(body.fondReserve));
       for (const k of ["siret", "mentionTVA"]) if (body[k] != null) s[k] = String(body[k]).trim();
-      for (const k of ["prixStand1", "prixStand2", "penalite"]) if (body[k] != null && body[k] !== "") s[k] = Math.max(0, toCents(body[k]));
+      for (const k of ["prixStand1", "prixStand2", "supplementSansAccueil"]) if (body[k] != null && body[k] !== "") s[k] = Math.max(0, toCents(body[k]));
       await setJSON("settings", s);
       return json(s);
     }

@@ -656,14 +656,14 @@ async function planningView(cible, modeCaisse = false) {
       ${jours.map((j) => `<tr style="${j.date === auj ? "background:#f3ede2" : ""}"><td><b>${new Date(j.date + "T12:00:00").toLocaleDateString("fr-FR", { weekday: "long", day: "numeric" })}</b></td>
         ${j.creneaux.map((c) => `<td><div class="muted" style="font-size:12px">${esc(c.libelle)}</div><div class="slot">
           ${c.inscrits.map((x) => `<span class="pill ${x.absent ? "abs" : ""} ${moi && x.initiales === moi ? "moi" : ""}" title="${esc(x.nom)}">${esc(x.initiales)}
-            ${admin ? `<button class="btn small ghost" style="padding:0 6px" data-del="${j.date}|${c.id}|${x.artisanId}" title="Retirer">✕</button>${x.absent ? "" : `<button class="btn small danger" style="padding:0 6px" data-abs="${j.date}|${c.id}|${x.artisanId}" title="Absent : pénalité">Absent</button>`}` : ""}
+            ${admin ? `<button class="btn small ghost" style="padding:0 6px" data-del="${j.date}|${c.id}|${x.artisanId}" title="Retirer">✕</button>${x.absent ? "" : `<button class="btn small danger" style="padding:0 6px" data-abs="${j.date}|${c.id}|${x.artisanId}" title="Non venu : passe à la formule sans participation">Non venu</button>`}` : ""}
             ${moi && x.initiales === moi && j.date > auj ? `<button class="btn small ghost" style="padding:0 6px" data-moidel="${j.date}|${c.id}">✕</button>` : ""}</span>`).join("")}
           ${c.inscrits.length < c.places && (admin || j.date >= auj) ? Array.from({ length: c.places - c.inscrits.length }, () => moi
             ? (c.inscrits.some((x) => x.initiales === moi) ? "" : `<button class="btn small" data-prendre="${j.date}|${c.id}">Je prends</button>`)
             : `<input data-ini="${j.date}|${c.id}" placeholder="Initiales" maxlength="4" style="width:90px;padding:4px 8px;text-transform:uppercase">`).join("") : ""}
         </div></td>`).join("")}</tr>`).join("")}</table></div>
       ${admin ? `<div class="card"><h2>Permanences du mois par artisan</h2><table>${Object.entries(compte).sort().map(([n, k]) => `<tr><td>${esc(n)}</td><td class="num">${k}</td></tr>`).join("") || "<tr><td class='muted'>Aucune inscription.</td></tr>"}</table>
-        <p class="muted">« Absent » applique la pénalité prévue au contrat ; elle apparaît sur le relevé mensuel de l'artisan.</p></div>` : ""}`;
+        <p class="muted">« Non venu » fait passer l'artisan à la formule sans participation à l'accueil (loyer + supplément) à partir du mois suivant, comme prévu au contrat.</p></div>` : ""}`;
     $("#plPrev").onclick = () => { const d = new Date(y, m - 2, 1); mois = ymd(d).slice(0, 7); draw(); };
     $("#plNext").onclick = () => { const d = new Date(y, m, 1); mois = ymd(d).slice(0, 7); draw(); };
     const err = (e) => msg($("#plmsg"), e.message);
@@ -671,7 +671,7 @@ async function planningView(cible, modeCaisse = false) {
     cible.querySelectorAll("[data-ini]").forEach((i) => (i.onchange = async () => { if (!i.value.trim()) return; const [date, creneau] = i.dataset.ini.split("|"); try { await api(base, { method: "POST", body: { date, creneau, initiales: i.value } }); draw(); } catch (x) { err(x); } }));
     cible.querySelectorAll("[data-moidel]").forEach((b) => (b.onclick = async () => { const [date, creneau] = b.dataset.moidel.split("|"); try { await api(`/planning?date=${date}&creneau=${creneau}`, { method: "DELETE" }); draw(); } catch (e) { err(e); } }));
     cible.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => { const [date, creneau, id] = b.dataset.del.split("|"); await api(`/planning?date=${date}&creneau=${creneau}&artisanId=${id}`, { method: "DELETE" }); draw(); }));
-    cible.querySelectorAll("[data-abs]").forEach((b) => (b.onclick = async () => { if (!confirm("Marquer absent ? La pénalité sera ajoutée au relevé du mois.")) return; const [date, creneau, artisanId] = b.dataset.abs.split("|"); await api("/planning/absence", { method: "POST", body: { date, creneau, artisanId } }); draw(); }));
+    cible.querySelectorAll("[data-abs]").forEach((b) => (b.onclick = async () => { if (!confirm("Marquer non venu ? L'artisan passera à la formule sans participation à l'accueil à partir du mois suivant.")) return; const [date, creneau, artisanId] = b.dataset.abs.split("|"); await api("/planning/absence", { method: "POST", body: { date, creneau, artisanId } }); draw(); }));
   };
   draw().catch((e) => (cible.innerHTML = `<div class="msg err">${esc(e.message)}</div>`));
 }
@@ -705,7 +705,7 @@ async function imprimerReleve(mois, artisanId) {
       <tr><td>Commission de la boutique (${r.commissionTaux} %)</td><td class="n">−${eur(r.commission)}</td></tr>
       ${r.totalPenalites ? `<tr><td>Pénalités</td><td class="n">−${eur(r.totalPenalites)}</td></tr>` : ""}
       <tr class="tot"><td>${r.aReverser >= 0 ? "Montant reversé" : "Reste dû à la boutique"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
-    <p style="font-size:11px">Loyer du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer)} par mois, réglé à l'avance selon le contrat.</p>
+    <p style="font-size:11px">Loyer du stand (${esc(r.artisan.stand || "")}, formule ${esc(r.formule)}) : ${eur(r.loyer)} par mois, réglé à l'avance selon le contrat.</p>
 
     <h2 class="page2">Détail des ventes</h2>
     <table><tr><th>Date</th><th>Ticket</th><th>Réf.</th><th>Article</th><th class="n">Qté</th><th class="n">Prix</th><th class="n">Total</th></tr>
@@ -1037,7 +1037,7 @@ async function adminArtisans() {
       <div class="row"><div><label>Nom affiché *</label><input id="aNom" placeholder="ex. Marie Dupont – Bijoux"></div><div style="max-width:120px"><label>Initiales * (2 ou 3 lettres)</label><input id="aIni" maxlength="4" placeholder="MD ou MDU"></div></div>
       <div class="row"><div><label>Identifiant de connexion *</label><input id="aId" placeholder="ex. marie.dupont"></div><div><label>Mot de passe provisoire *</label><input id="aPw"></div></div>
       <div class="row"><div><label>Métier</label><input id="aMet"></div><div><label>Stand</label><select id="aStand"><option>1 m</option><option>2 m</option></select></div></div>
-      <label>Date de début du contrat</label><input type="date" id="aDeb">
+      <div class="row"><div><label>Date de début du contrat</label><input type="date" id="aDeb"></div><div><label>Formule</label><select id="aForm"><option value="avec accueil">Avec participation à l'accueil</option><option value="sans accueil">Sans participation (loyer + supplément)</option></select></div></div>
       <div class="row"><div><label>Téléphone</label><input id="aTel"></div><div><label>E-mail</label><input id="aMail"></div></div>
       <div id="amsg"></div><button class="btn" id="aGo" style="margin-top:10px">Créer le compte</button>
       <p class="muted">Les références de ses articles commenceront par ses initiales (ex. MD001).</p></div>
@@ -1045,12 +1045,13 @@ async function adminArtisans() {
   const load = async () => {
     const A = await api("/artisans");
     $("#alist").innerHTML = `<table><tr><th>Artisan</th><th>Identifiant</th><th>Stand</th><th>Contrat</th><th></th></tr>
-      ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}</td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
+      ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}<div class="muted">${a.formule === "sans accueil" ? "Sans accueil" + (a.formuleDepuis ? " dès le " + fd(a.formuleDepuis) : "") : "Avec accueil"}</div><button class="btn small ghost" data-form="${a.id}" data-v="${a.formule === "sans accueil" ? "avec accueil" : "sans accueil"}">${a.formule === "sans accueil" ? "Repasser avec accueil" : "Passer sans accueil"}</button></td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
       <td class="num"><button class="btn small osb" data-rel="${a.id}">Relevé / facture</button> <button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
     $("#alist").querySelectorAll("[data-pw]").forEach((b) => (b.onclick = async () => {
       const pw = prompt("Nouveau mot de passe (6 caractères min.) :"); if (!pw) return;
       try { await api("/artisans/" + b.dataset.pw, { method: "PUT", body: { motdepasse: pw } }); alert("Mot de passe modifié."); } catch (e) { alert(e.message); }
     }));
+    $("#alist").querySelectorAll("[data-form]").forEach((b) => (b.onclick = async () => { await api("/artisans/" + b.dataset.form, { method: "PUT", body: { formule: b.dataset.v, formuleDepuis: "" } }); load(); }));
     $("#alist").querySelectorAll("[data-rel]").forEach((b) => (b.onclick = () => {
       const m = prompt("Mois du relevé (AAAA-MM) :", thisMonth()); if (!m) return;
       imprimerReleve(m, b.dataset.rel).catch((e) => alert(e.message));
@@ -1064,7 +1065,7 @@ async function adminArtisans() {
   };
   $("#aGo").onclick = async () => {
     try {
-      const a = await api("/artisans", { method: "POST", body: { nom: $("#aNom").value, initiales: $("#aIni").value, identifiant: $("#aId").value, motdepasse: $("#aPw").value, metier: $("#aMet").value, stand: $("#aStand").value, dateDebut: $("#aDeb").value, telephone: $("#aTel").value, email: $("#aMail").value } });
+      const a = await api("/artisans", { method: "POST", body: { nom: $("#aNom").value, initiales: $("#aIni").value, identifiant: $("#aId").value, motdepasse: $("#aPw").value, metier: $("#aMet").value, stand: $("#aStand").value, dateDebut: $("#aDeb").value, formule: $("#aForm").value, telephone: $("#aTel").value, email: $("#aMail").value } });
       msg($("#amsg"), `Compte créé : identifiant « ${a.identifiant} », initiales ${a.initiales}.`, "ok");
       ["aNom", "aIni", "aId", "aPw", "aMet", "aTel", "aMail", "aDeb"].forEach((i) => ($("#" + i).value = "")); load();
     } catch (e) { msg($("#amsg"), e.message); }
@@ -1097,7 +1098,7 @@ async function adminParametres() {
       <label>SIRET (relevés et factures)</label><input id="sSiret" value="${esc(s.siret || "")}">
       <label>Mention TVA sur les factures</label><input id="sTva" value="${esc(s.mentionTVA || "")}">
       <div class="row"><div><label>Loyer stand 1 m (€)</label><input id="sP1" inputmode="decimal" value="${(s.prixStand1 / 100).toFixed(2).replace(".", ",")}"></div><div><label>Loyer stand 2 m (€)</label><input id="sP2" inputmode="decimal" value="${(s.prixStand2 / 100).toFixed(2).replace(".", ",")}"></div></div>
-      <label>Pénalité permanence non assurée (€)</label><input id="sPen" inputmode="decimal" value="${(s.penalite / 100).toFixed(2).replace(".", ",")}">
+      <label>Supplément mensuel formule sans participation à l'accueil (€)</label><input id="sPen" inputmode="decimal" value="${((s.supplementSansAccueil ?? 5000) / 100).toFixed(2).replace(".", ",")}">
       <label>Fond de caisse laissé dans le tiroir (€)</label><input id="sFond" inputmode="decimal" value="${(s.fondReserve / 100).toFixed(2).replace(".", ",")}">
       <div id="smsg"></div><button class="btn" id="sGo" style="margin-top:10px">Enregistrer</button></div>
     <div class="card"><h2>Poste caisse</h2>
@@ -1109,7 +1110,7 @@ async function adminParametres() {
     </div>
     <div class="card"><h2>Mot de passe gérance</h2><label>Nouveau mot de passe</label><input type="password" id="apw"><div id="apm"></div><button class="btn" id="apgo" style="margin-top:10px">Changer</button></div></div>`;
   $("#sGo").onclick = async () => {
-    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, penalite: $("#sPen").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
+    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, supplementSansAccueil: $("#sPen").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
     catch (e) { msg($("#smsg"), e.message); }
   };
   if ($("#act")) $("#act").onclick = async () => {
