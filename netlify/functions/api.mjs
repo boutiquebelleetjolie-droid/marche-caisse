@@ -73,6 +73,61 @@ async function ventesDuMois(mois) {
   return (await listJSON(`sales/${mois}/`)).sort((a, b) => b.date.localeCompare(a.date));
 }
 
+// Dates à l'heure de Paris (AAAA-MM-JJ)
+const parisDate = (iso) => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris" }).format(new Date(iso));
+const parisHeure = (iso) => Number(new Intl.DateTimeFormat("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", hour12: false }).format(new Date(iso)));
+function addDays(ymd, n) { const d = new Date(ymd + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function periodes() {
+  const auj = parisDate(new Date().toISOString());
+  const d = new Date(auj + "T12:00:00Z");
+  const lundi = addDays(auj, -((d.getUTCDay() + 6) % 7));
+  const [y, mo] = auj.split("-").map(Number);
+  const debutMois = `${y}-${String(mo).padStart(2, "0")}-01`;
+  const finMois = addDays(`${mo === 12 ? y + 1 : y}-${String(mo === 12 ? 1 : mo + 1).padStart(2, "0")}-01`, -1);
+  const qm = Math.floor((mo - 1) / 3) * 3 + 1;
+  const debutTri = `${y}-${String(qm).padStart(2, "0")}-01`;
+  const finTri = addDays(`${qm + 3 > 12 ? y + 1 : y}-${String(qm + 3 > 12 ? 1 : qm + 3).padStart(2, "0")}-01`, -1);
+  return {
+    jour: { du: auj, au: auj, libelle: "Aujourd'hui" },
+    semaine: { du: lundi, au: addDays(lundi, 6), libelle: "Cette semaine" },
+    mois: { du: debutMois, au: finMois, libelle: "Ce mois-ci" },
+    trimestre: { du: debutTri, au: finTri, libelle: "Ce trimestre" },
+  };
+}
+// Ventes entre deux dates (heure de Paris), en lisant les mois concernés (+ marge d'un mois pour les ventes de fin de mois)
+async function ventesEntre(du, au) {
+  const mois = new Set();
+  let cur = addDays(du.slice(0, 7) + "-01", -1).slice(0, 7);
+  const fin = au.slice(0, 7);
+  while (cur <= fin) { mois.add(cur); const [y, m] = cur.split("-").map(Number); cur = `${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, "0")}`; }
+  const all = (await Promise.all([...mois].map(ventesDuMois))).flat();
+  return all.filter((v) => { const d = parisDate(v.date); return d >= du && d <= au; }).sort((a, b) => b.date.localeCompare(a.date));
+}
+// Analyse complète pour la gérance
+function analyse(ventes) {
+  const tickets = ventes.length;
+  const total = ventes.reduce((s, v) => s + v.total, 0);
+  const articles = ventes.reduce((s, v) => s + v.lignes.reduce((a, l) => a + l.qte, 0), 0);
+  const parJour = {}, parMode = {}, parHeure = {}, parArticle = {};
+  for (const v of ventes) {
+    const d = parisDate(v.date);
+    (parJour[d] ||= { date: d, ca: 0, tickets: 0 }); parJour[d].ca += v.total; parJour[d].tickets++;
+    parMode[v.paiement.mode] = (parMode[v.paiement.mode] || 0) + v.total;
+    const h = parisHeure(v.date); (parHeure[h] ||= { heure: h, ca: 0, tickets: 0 }); parHeure[h].ca += v.total; parHeure[h].tickets++;
+    for (const l of v.lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, artisanNom: l.artisanNom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
+  }
+  const arts = Object.values(parArticle);
+  return {
+    totalMagasin: total, nbVentes: tickets, articles,
+    panierMoyen: tickets ? Math.round(total / tickets) : 0,
+    articlesParPanier: tickets ? Math.round((articles / tickets) * 10) / 10 : 0,
+    parJour: Object.values(parJour).sort((a, b) => a.date.localeCompare(b.date)),
+    parMode, parHeure: Object.values(parHeure).sort((a, b) => a.heure - b.heure),
+    topArticlesValeur: [...arts].sort((a, b) => b.ca - a.ca).slice(0, 10),
+    topArticlesQte: [...arts].sort((a, b) => b.qte - a.qte).slice(0, 10),
+  };
+}
+
 function resumeParArtisan(ventes, taux) {
   const par = {};
   let total = 0;
@@ -161,8 +216,8 @@ export default async (req) => {
       }
 
       if (path === "/caisse/jour" && m === "GET") {
-        const jour = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
-        const ventes = (await ventesDuMois(jour.slice(0, 7))).filter((v) => v.date.slice(0, 10) === jour);
+        const jour = url.searchParams.get("date") || parisDate(new Date().toISOString());
+        const ventes = (await ventesEntre(jour, jour)).filter((v) => parisDate(v.date) === jour);
         const ok = ventes.filter((v) => !v.annulee);
         const parMode = {};
         for (const v of ok) parMode[v.paiement.mode] = (parMode[v.paiement.mode] || 0) + v.total;
@@ -238,18 +293,32 @@ export default async (req) => {
     }
 
     // --- Statistiques ---
+    // Résumé jour / semaine / mois / trimestre (artisan : ses chiffres + chiffre global du magasin)
+    if (path === "/stats/resume" && m === "GET") {
+      const p = periodes();
+      const ventes = (await ventesEntre(p.trimestre.du, p.trimestre.au));
+      const out = {};
+      for (const [k, r] of Object.entries(p)) {
+        const vs = ventes.filter((v) => { const d = parisDate(v.date); return d >= r.du && d <= r.au; });
+        const res = resumeParArtisan(vs, settings.commission);
+        const mine = res.par.find((x) => x.artisanId === user.id) || { ca: 0, articles: 0, commission: 0, net: 0 };
+        out[k] = { ...r, magasin: res.total, tickets: vs.filter((v) => !v.annulee).length, moi: isAdmin ? null : mine };
+      }
+      return json({ commissionTaux: settings.commission, periodes: out });
+    }
     if (path === "/stats" && m === "GET") {
-      const mois = url.searchParams.get("mois") || new Date().toISOString().slice(0, 7);
-      const ventes = await ventesDuMois(mois);
+      const p = periodes();
+      const du = url.searchParams.get("du") || p.mois.du;
+      const au = url.searchParams.get("au") || p.mois.au;
+      const ventes = (await ventesEntre(du, au)).filter((v) => !v.annulee);
       const res = resumeParArtisan(ventes, settings.commission);
-      if (isAdmin) return json({ mois, commissionTaux: settings.commission, totalMagasin: res.total, parArtisan: res.par, nbVentes: ventes.filter((v) => !v.annulee).length });
+      if (isAdmin) return json({ du, au, commissionTaux: settings.commission, ...analyse(ventes), parArtisan: res.par });
       const mine = res.par.find((r) => r.artisanId === user.id) || { ca: 0, commission: 0, net: 0, articles: 0 };
       const lignes = [];
-      for (const v of ventes) {
-        if (v.annulee) continue;
-        for (const l of v.lignes) if (l.artisanId === user.id) lignes.push({ date: v.date, ref: l.ref, nom: l.nom, qte: l.qte, pu: l.pu, total: l.total });
-      }
-      return json({ mois, commissionTaux: settings.commission, totalMagasin: res.total, moi: mine, lignes });
+      for (const v of ventes) for (const l of v.lignes) if (l.artisanId === user.id) lignes.push({ date: v.date, ref: l.ref, nom: l.nom, qte: l.qte, pu: l.pu, total: l.total });
+      const parArticle = {};
+      for (const l of lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
+      return json({ du, au, commissionTaux: settings.commission, totalMagasin: res.total, moi: mine, lignes, topArticles: Object.values(parArticle).sort((a, b) => b.ca - a.ca).slice(0, 10) });
     }
 
     // ---------- Administration (gérance uniquement) ----------
@@ -269,7 +338,7 @@ export default async (req) => {
       const a = {
         id: uid(), nom, initiales, identifiant, pw: hashPw(body.motdepasse),
         metier: String(body.metier || "").trim(), telephone: String(body.telephone || "").trim(), email: String(body.email || "").trim(),
-        stand: String(body.stand || "1 m"), actif: true, nextRef: 1, creeLe: new Date().toISOString(),
+        stand: String(body.stand || "1 m"), dateDebut: String(body.dateDebut || "").slice(0, 10), actif: true, nextRef: 1, creeLe: new Date().toISOString(),
       };
       await setJSON(`artisans/${a.id}`, a);
       return json(publicArtisan(a));
@@ -278,7 +347,7 @@ export default async (req) => {
     if (mArt && m === "PUT") {
       const a = await getJSON(`artisans/${mArt[1]}`);
       if (!a) return err("Artisan introuvable", 404);
-      for (const k of ["nom", "metier", "telephone", "email", "stand"]) if (body[k] != null) a[k] = String(body[k]).trim();
+      for (const k of ["nom", "metier", "telephone", "email", "stand", "dateDebut"]) if (body[k] != null) a[k] = String(body[k]).trim();
       if (body.actif != null) a.actif = !!body.actif;
       if (body.motdepasse) { if (String(body.motdepasse).length < 6) return err("Mot de passe : 6 caractères minimum"); a.pw = hashPw(body.motdepasse); }
       await setJSON(`artisans/${a.id}`, a);
