@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Caisse – Marché des Artisans et Producteurs</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#2d2a26">
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
   :root{--bg:#f7f3ec;--card:#fff;--ink:#2d2a26;--muted:#7a7268;--osb:#c99a5b;--osb-d:#9a6f37;--sauge:#6f8f72;--sauge-d:#4f6d52;--rouge:#b5483b;--line:#e6dfd3;--r:12px}
@@ -58,7 +60,13 @@
   .qty{display:flex;align-items:center;gap:4px}
   .qty button{width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:16px;cursor:pointer}
   .total{font-size:30px;font-weight:800;text-align:right;margin:12px 0}
-  .pay{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+  .pay{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .offline{background:#fff3cd;color:#856404;padding:8px 12px;border-radius:10px;margin:6px 0;font-size:14px}
+  .plan td{vertical-align:top}
+  .slot{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .pill{display:inline-flex;gap:4px;align-items:center;padding:3px 8px;border-radius:999px;background:#e2efe3;font-size:13px;font-weight:600}
+  .pill.abs{background:#f8e1dd;color:#8a2e23;text-decoration:line-through}
+  .pill.moi{background:var(--osb);color:#fff}
   .rendu{font-size:26px;font-weight:800;text-align:center;padding:12px;border-radius:10px;background:#e2efe3;color:#2f5b33;margin-top:10px}
   .rendu.manque{background:#f8e1dd;color:#8a2e23}
   .quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
@@ -109,7 +117,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const today = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => new Date().toISOString().slice(0, 7);
 const fdate = (iso) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
-let S = { token: localStorage.getItem("token"), role: localStorage.getItem("role"), nom: localStorage.getItem("nom"), cle: localStorage.getItem("cleCaisse"), settings: {} };
+let S = { token: localStorage.getItem("token"), role: localStorage.getItem("role"), nom: localStorage.getItem("nom"), cle: localStorage.getItem("cleCaisse"), initiales: localStorage.getItem("initiales") || "", settings: {} };
 
 async function api(path, opts = {}) {
   const headers = { "content-type": "application/json" };
@@ -123,7 +131,7 @@ async function api(path, opts = {}) {
 }
 function msg(el, text, type = "err") { el.innerHTML = text ? `<div class="msg ${type}">${esc(text)}</div>` : ""; }
 function openModal(html) { $("#modalBox").innerHTML = html; $("#modal").classList.remove("hidden"); }
-function closeModal() { $("#modal").classList.add("hidden"); $("#modal").classList.remove("print-zone"); }
+function closeModal() { $("#modal").classList.add("hidden"); $("#modal").classList.remove("print-zone"); $("#modalBox").style.maxWidth = ""; }
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 
 function setNav(items, active) {
@@ -164,8 +172,8 @@ function showLogin() {
   const go = async () => {
     try {
       const d = await api("/login", { method: "POST", body: { identifiant: $("#lid").value, motdepasse: $("#lpw").value } });
-      S.token = d.token; S.role = d.role; S.nom = d.nom;
-      localStorage.setItem("token", d.token); localStorage.setItem("role", d.role); localStorage.setItem("nom", d.nom);
+      S.token = d.token; S.role = d.role; S.nom = d.nom; S.initiales = d.initiales || "";
+      localStorage.setItem("token", d.token); localStorage.setItem("role", d.role); localStorage.setItem("nom", d.nom); localStorage.setItem("initiales", S.initiales);
       start();
     } catch (e) { msg($("#lmsg"), e.message); }
   };
@@ -175,14 +183,14 @@ function showLogin() {
 }
 
 function route(k) {
-  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
-  const navR = [["catalogue", "Mon catalogue"], ["mesventes", "Mes ventes"], ["compte", "Mon compte"]];
+  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["planning", "Permanences"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
+  const navR = [["catalogue", "Mon catalogue"], ["mesventes", "Mes ventes"], ["planning", "Permanences"], ["compte", "Mon compte"]];
   if (S.role === "admin") {
     setNav(navA, k);
-    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
+    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, planning: () => planningView(app), artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
   } else {
     setNav(navR, k);
-    ({ catalogue: artisanCatalogue, mesventes: artisanVentes, compte: compteView }[k] || artisanCatalogue)();
+    ({ catalogue: artisanCatalogue, mesventes: artisanVentes, planning: () => planningView(app), compte: compteView }[k] || artisanCatalogue)();
   }
 }
 
@@ -205,6 +213,7 @@ async function showCaisse() {
           ${S.role === "admin" && S.token ? `<button class="btn small ghost" id="cSortie">Sortie d'espèces</button>` : ""}
           <button class="btn small" id="cZ">Clôture / Ticket Z</button>
           <button class="btn small osb" id="cEtiq">Étiquettes</button>
+          <button class="btn small ghost" id="cPlan">Permanences</button>
           <button class="btn small ghost" id="cReload">Actualiser les articles</button>
           ${!S.token ? `<button class="btn small ghost" id="cQuit">Fermer la caisse</button>` : ""}
         </div>
@@ -218,10 +227,12 @@ async function showCaisse() {
     <div class="card">
       <h2>Ticket en cours</h2>
       <div id="cart"></div>
+      <div class="row" style="margin-top:6px"><button class="btn small ghost" id="cRemT" style="flex:0 0 auto">Remise sur le ticket</button><span id="remT" class="muted" style="text-align:right"></span></div>
       <div class="total" id="total">0,00 €</div>
       <div class="pay">
         <button class="btn" data-pay="CB">Carte</button>
         <button class="btn osb" data-pay="Espèces">Espèces</button>
+        <button class="btn ghost" data-pay="Mixte">Carte + espèces</button>
       </div>
       <div class="row" style="margin-top:10px">
         <button class="btn ghost small" id="cAtt">Mettre en attente</button>
@@ -238,6 +249,8 @@ async function showCaisse() {
   if ($("#cQuit")) $("#cQuit").onclick = showLogin;
   $("#cClear").onclick = () => { if (!CART.length) return; justifier("Vider le panier", { type: "panier", detail: CART.map((l) => l.qte + " × " + l.nom).join(", "), montant: CART.reduce((t, l) => t + l.prix * l.qte, 0) }, () => { CART = []; renderCart(); }); };
   $("#cAtt").onclick = mettreEnAttente;
+  $("#cPlan").onclick = () => { openModal(`<div id="planBox"></div><button class="btn ghost" style="margin-top:12px" onclick="closeModal()">Fermer</button>`); $("#modalBox").style.maxWidth = "820px"; planningView($("#planBox"), true); };
+  $("#cRemT").onclick = () => saisirRemise("Remise sur tout le ticket", REM_TICKET, (r) => { REM_TICKET = r; renderCart(); });
   $("#cSac").onclick = () => { const p = PRODS.find((x) => x.ref === "SAC"); if (p) addToCart(p); $("#scan").focus(); };
   $("#cAttList").onclick = listeAttente;
   document.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => payer(b.dataset.pay)));
@@ -258,11 +271,12 @@ async function showCaisse() {
   renderCart();
 }
 async function loadProds() {
-  try { PRODS = await api("/caisse/produits"); msg($("#cmsg"), ""); renderResults($("#scan")?.value || ""); }
+  try { PRODS = await api("/caisse/produits"); localStorage.setItem("cacheProduits", JSON.stringify(PRODS)); msg($("#cmsg"), ""); }
   catch (e) {
-    if (/pas activé/.test(e.message)) { localStorage.removeItem("cleCaisse"); S.cle = null; }
-    msg($("#cmsg"), e.message);
+    if (/pas activé/.test(e.message)) { localStorage.removeItem("cleCaisse"); S.cle = null; msg($("#cmsg"), e.message); }
+    else { PRODS = JSON.parse(localStorage.getItem("cacheProduits") || "[]"); msg($("#cmsg"), "Hors connexion : articles chargés depuis la dernière synchronisation.", "ok"); }
   }
+  renderResults($("#scan")?.value || ""); majBandeauHorsLigne();
 }
 function filterProds(q) {
   q = q.trim().toLowerCase();
@@ -284,19 +298,48 @@ function addToCart(p) {
   if (l) l.qte++; else CART.push({ ref: p.ref, nom: p.nom, prix: p.prix, artisanNom: p.artisanNom, qte: 1 });
   msg($("#cmsg"), ""); renderCart();
 }
+// ---- Remises ----
+let REM_TICKET = null;
+function calcRemise(r, base) {
+  if (!r || !r.valeur) return 0;
+  const v = Number(String(r.valeur).replace(",", "."));
+  if (!(v > 0)) return 0;
+  return Math.min(base, r.type === "%" ? Math.round((base * Math.min(v, 100)) / 100) : Math.round(v * 100));
+}
+function calcPanier() {
+  const lignes = CART.map((l) => { const brut = l.prix * l.qte, rem = calcRemise(l.remise, brut); return { ...l, pu: l.prix, brut, remiseMontant: rem, total: brut - rem }; });
+  const st = lignes.reduce((t, l) => t + l.total, 0);
+  const rt = calcRemise(REM_TICKET, st);
+  if (rt > 0) { let reste = rt; lignes.forEach((l, i) => { const part = i === lignes.length - 1 ? reste : Math.round((rt * l.total) / st); l.total -= part; reste -= part; }); }
+  return { lignes, sousTotal: st, remiseTicket: rt, total: lignes.reduce((t, l) => t + l.total, 0) };
+}
+function saisirRemise(titre, actuelle, ok) {
+  openModal(`<h2>${esc(titre)}</h2>
+    <div class="row"><div><label>Type</label><select id="rTy"><option value="%" ${actuelle?.type !== "€" ? "selected" : ""}>Pourcentage (%)</option><option value="€" ${actuelle?.type === "€" ? "selected" : ""}>Montant (€)</option></select></div>
+    <div><label>Valeur</label><input id="rVa" inputmode="decimal" value="${esc(actuelle?.valeur || "")}"></div></div>
+    <div class="quick">${[5, 10, 15, 20, 30, 50].map((v) => `<button class="btn small ghost" data-rq="${v}">−${v} %</button>`).join("")}</div>
+    <div class="row" style="margin-top:12px"><button class="btn ghost" id="rDel">Retirer la remise</button><button class="btn" id="rOk">Appliquer</button></div>`);
+  document.querySelectorAll("[data-rq]").forEach((b) => (b.onclick = () => { $("#rTy").value = "%"; $("#rVa").value = b.dataset.rq; }));
+  $("#rDel").onclick = () => { closeModal(); ok(null); };
+  $("#rOk").onclick = () => { const v = $("#rVa").value.trim(); closeModal(); ok(v ? { type: $("#rTy").value, valeur: v } : null); };
+}
 function renderCart() {
   const el = $("#cart"); if (!el) return;
-  el.innerHTML = CART.map((l, i) => `
+  const P = calcPanier();
+  el.innerHTML = P.lignes.map((l, i) => `
     <div class="cart-line">
-      <div><b>${esc(l.nom)}</b><div class="muted">${esc(l.ref)} · ${esc(l.artisanNom)}</div></div>
+      <div><b>${esc(l.nom)}</b><div class="muted">${esc(l.ref)} · ${esc(l.artisanNom)}</div>
+        <button class="btn small ghost" data-rem="${i}" style="margin-top:4px;padding:2px 8px">${l.remise ? "Remise −" + esc(l.remise.valeur) + (l.remise.type === "%" ? " %" : " €") : "Remise"}</button></div>
       <div class="qty"><button data-i="${i}" data-d="-1">−</button><span>${l.qte}</span><button data-i="${i}" data-d="1">+</button></div>
-      <div class="num"><b>${eur(l.prix * l.qte)}</b></div>
+      <div class="num">${l.remiseMontant ? `<s class="muted">${eur(l.brut)}</s><br>` : ""}<b>${eur(l.brut - l.remiseMontant)}</b></div>
       <button class="btn small ghost" data-del="${i}">✕</button>
     </div>`).join("") || `<p class="muted">Scannez un article pour commencer.</p>`;
+  el.querySelectorAll("[data-rem]").forEach((b) => (b.onclick = () => { const l = CART[+b.dataset.rem]; saisirRemise("Remise sur " + l.nom, l.remise, (r) => { l.remise = r; renderCart(); }); }));
+  if ($("#remT")) $("#remT").textContent = P.remiseTicket ? `Sous-total ${eur(P.sousTotal)} · remise −${eur(P.remiseTicket)}` : "";
   const supprimer = (i, n) => { const l = CART[i]; justifier("Retirer un article du panier", { type: "ligne", detail: n + " × " + l.nom + " (" + l.artisanNom + ")", montant: l.prix * n }, () => { l.qte -= n; if (l.qte < 1) CART.splice(i, 1); renderCart(); }); };
   el.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const i = +b.dataset.i; if (+b.dataset.d > 0) { CART[i].qte++; renderCart(); } else supprimer(i, 1); }));
   el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => supprimer(+b.dataset.del, CART[+b.dataset.del].qte)));
-  $("#total").textContent = eur(CART.reduce((s, l) => s + l.prix * l.qte, 0));
+  $("#total").textContent = eur(P.total);
 }
 const estGerant = () => S.role === "admin" && !!S.token;
 // Demande une justification (sauf pour la gérance), l'enregistre dans le journal puis exécute l'action
@@ -342,43 +385,78 @@ async function listeAttente() {
 
 function payer(mode) {
   if (!CART.length) return msg($("#cmsg"), "Le panier est vide.");
-  const total = CART.reduce((s, l) => s + l.prix * l.qte, 0);
-  const esp = mode === "Espèces";
+  const P = calcPanier(), total = P.total;
+  const esp = mode === "Espèces", mix = mode === "Mixte";
   openModal(`
-    <h2>Paiement : ${esc(mode)}</h2>
+    <h2>Paiement : ${mix ? "carte + espèces" : esc(mode)}</h2>
     <div class="total">${eur(total)}</div>
-    ${esp ? `<label>Montant donné par le client (€)</label><input id="recu" inputmode="decimal" placeholder="ex. 50" style="font-size:22px">
-      <div class="quick">${[[total / 100, "Montant exact"], [10, "10 €"], [20, "20 €"], [50, "50 €"], [100, "100 €"]].filter(([v]) => v * 100 >= total).map(([v, l]) => `<button class="btn small ghost" data-q="${v}">${l}</button>`).join("")}</div>
-      <div id="rendu" class="rendu hidden"></div>` : ""}
+    ${mix ? `<label>Montant payé par carte (€)</label><input id="pCb" inputmode="decimal" style="font-size:20px"><p class="muted" id="pEspPart"></p>` : ""}
+    ${esp || mix ? `<label>Espèces données par le client (€)</label><input id="recu" inputmode="decimal" placeholder="ex. 50" style="font-size:22px">
+      <div class="quick" id="quick"></div><div id="rendu" class="rendu hidden"></div>` : ""}
     <div id="pmsg"></div>
     <div class="row" style="margin-top:12px"><button class="btn ghost" id="pAnn">Annuler</button><button class="btn" id="pOk">Valider l'encaissement</button></div>`);
+  const cents = (id) => Math.round(parseFloat(($("#" + id)?.value || "0").replace(",", ".")) * 100) || 0;
+  const partEsp = () => (mix ? Math.max(0, total - cents("pCb")) : total);
   const majRendu = () => {
-    const r = Math.round(parseFloat($("#recu").value.replace(",", ".")) * 100) || 0;
-    const el = $("#rendu");
-    if (!r) { el.classList.add("hidden"); return; }
-    el.classList.remove("hidden");
-    el.classList.toggle("manque", r < total);
-    el.textContent = r >= total ? "À rendre : " + eur(r - total) : "Il manque " + eur(total - r);
-  };
-  if (esp) {
-    $("#recu").oninput = majRendu;
+    const due = partEsp(), r = cents("recu"), el = $("#rendu");
+    if (mix) $("#pEspPart").textContent = "Reste à payer en espèces : " + eur(due);
+    $("#quick").innerHTML = [[due / 100, "Montant exact"], [10, "10 €"], [20, "20 €"], [50, "50 €"], [100, "100 €"]].filter(([v]) => v * 100 >= due).map(([v, l]) => `<button class="btn small ghost" data-q="${v}">${l}</button>`).join("");
     document.querySelectorAll("[data-q]").forEach((b) => (b.onclick = () => { $("#recu").value = String(b.dataset.q).replace(".", ","); majRendu(); }));
-    setTimeout(() => $("#recu").focus(), 50);
-  }
+    if (!r) { el.classList.add("hidden"); return; }
+    el.classList.remove("hidden"); el.classList.toggle("manque", r < due);
+    el.textContent = r >= due ? "À rendre : " + eur(r - due) : "Il manque " + eur(due - r);
+  };
+  if (esp || mix) { $("#recu").oninput = majRendu; if (mix) $("#pCb").oninput = majRendu; majRendu(); setTimeout(() => $(mix ? "#pCb" : "#recu").focus(), 50); }
   $("#pAnn").onclick = closeModal;
   $("#pOk").onclick = async () => {
-    if (esp) {
-      const r = Math.round(parseFloat(($("#recu").value || "0").replace(",", ".")) * 100) || 0;
-      if (r && r < total) return msg($("#pmsg"), "Le montant donné est inférieur au total.");
-    }
+    if (mix && (cents("pCb") <= 0 || cents("pCb") >= total)) return msg($("#pmsg"), "Indiquez la part payée par carte (inférieure au total).");
+    if ((esp || mix) && cents("recu") && cents("recu") < partEsp()) return msg($("#pmsg"), "Les espèces données sont inférieures à ce qui reste à payer.");
     $("#pOk").disabled = true;
-    try {
-      const v = await api("/caisse/ventes", { method: "POST", body: { lignes: CART.map((l) => ({ ref: l.ref, qte: l.qte })), paiement: { mode, recu: $("#recu")?.value || null } } });
-      CART = []; renderCart(); loadProds();
-      showTicket(v);
-    } catch (e) { msg($("#pmsg"), e.message); $("#pOk").disabled = false; }
+    const corps = { id: crypto.randomUUID(), date: new Date().toISOString(),
+      lignes: CART.map((l) => ({ ref: l.ref, qte: l.qte, remise: l.remise || null })), remiseTicket: REM_TICKET,
+      paiement: { mode, recu: $("#recu")?.value || null, cb: mix ? $("#pCb").value : null } };
+    let v;
+    try { v = await api("/caisse/ventes", { method: "POST", body: corps }); }
+    catch (e) {
+      if (!(e instanceof TypeError) && navigator.onLine) { msg($("#pmsg"), e.message); $("#pOk").disabled = false; return; }
+      v = venteLocale(corps, P); ajouterFile(corps);
+    }
+    CART = []; REM_TICKET = null; renderCart(); if (!v.horsLigneLocal) loadProds();
+    showTicket(v);
   };
 }
+// ---- Mode hors connexion : les ventes sont gardées sur l'appareil puis envoyées dès le retour d'internet ----
+function venteLocale(corps, P) {
+  const total = P.total, mode = corps.paiement.mode;
+  const toC = (x) => Math.round(parseFloat(String(x || "0").replace(",", ".")) * 100) || 0;
+  const paiement = { mode, recu: corps.paiement.recu ? toC(corps.paiement.recu) : null };
+  if (mode === "Mixte") { paiement.cb = toC(corps.paiement.cb); paiement.especes = total - paiement.cb; }
+  return { id: corps.id, numero: "HL-" + corps.id.slice(0, 6).toUpperCase(), date: corps.date, total, paiement, annulee: false, horsLigneLocal: true,
+    lignes: P.lignes.map((l) => ({ ref: l.ref, nom: l.nom, artisanNom: l.artisanNom, qte: l.qte, pu: l.prix, total: l.total })) };
+}
+const lireFile = () => JSON.parse(localStorage.getItem("fileVentes") || "[]");
+function ajouterFile(corps) { const f = lireFile(); f.push(corps); localStorage.setItem("fileVentes", JSON.stringify(f)); majBandeauHorsLigne(); }
+let SYNC_EN_COURS = false;
+async function synchroniser() {
+  if (SYNC_EN_COURS || !S.cle) return;
+  let f = lireFile(); if (!f.length) return majBandeauHorsLigne();
+  SYNC_EN_COURS = true;
+  try {
+    while (f.length) { await api("/caisse/ventes", { method: "POST", body: f[0] }); f = lireFile().slice(1); localStorage.setItem("fileVentes", JSON.stringify(f)); }
+    if ($("#results")) loadProds();
+  } catch {} finally { SYNC_EN_COURS = false; majBandeauHorsLigne(); }
+}
+function majBandeauHorsLigne() {
+  let b = $("#bandeauHL");
+  const n = lireFile().length;
+  if (!n && navigator.onLine) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement("div"); b.id = "bandeauHL"; b.className = "offline"; document.querySelector("main").prepend(b); }
+  b.textContent = (navigator.onLine ? "" : "Pas de connexion internet. ") + (n ? `${n} vente(s) enregistrée(s) sur cet appareil, envoi automatique dès le retour d'internet.` : "Les ventes seront gardées sur cet appareil.");
+}
+window.addEventListener("online", synchroniser);
+window.addEventListener("offline", majBandeauHorsLigne);
+setInterval(synchroniser, 30000);
+
 function ticketHTML(v) {
   const s = S.settings;
   return `<div id="ticket">
@@ -387,18 +465,21 @@ function ticketHTML(v) {
     ${v.annulee ? '<div class="c"><b>*** VENTE ANNULÉE ***</b></div>' : ""}
     <hr>
     ${v.lignes.map((l) => `<div>${esc(l.nom)}</div>
-      <div class="l"><span>${l.qte} x ${eur(l.pu)}</span><span>${eur(l.total)}</span></div>
+      <div class="l"><span>${l.qte} x ${eur(l.pu)}${l.remise ? ` (remise −${esc(l.remise.valeur)}${l.remise.type === "%" ? " %" : " €"})` : ""}</span><span>${eur(l.total)}</span></div>
       <div style="font-size:11px">Réf. ${esc(l.ref)} – vendu pour le compte de ${esc(l.artisanNom)}</div>`).join("<div style='height:4px'></div>")}
     <hr>
+    ${v.remiseTicket ? `<div class="l"><span>Remise sur le ticket (−${esc(v.remiseTicket.valeur)}${v.remiseTicket.type === "%" ? " %" : " €"})</span><span>−${eur(v.remiseTicket.montant)}</span></div>` : ""}
     <div class="l"><b>TOTAL</b><b>${eur(v.total)}</b></div>
-    <div class="l"><span>Payé par ${esc(v.paiement.mode)}</span><span></span></div>
-    ${v.paiement.recu ? `<div class="l"><span>Reçu</span><span>${eur(v.paiement.recu)}</span></div><div class="l"><span>Rendu</span><span>${eur(v.paiement.recu - v.total)}</span></div>` : ""}
+    ${v.paiement.mode === "Mixte" ? `<div class="l"><span>Carte</span><span>${eur(v.paiement.cb)}</span></div><div class="l"><span>Espèces</span><span>${eur(v.paiement.especes)}</span></div>` : `<div class="l"><span>Payé par ${esc(v.paiement.mode === "CB" ? "carte" : v.paiement.mode)}</span><span></span></div>`}
+    ${v.paiement.recu ? `<div class="l"><span>Espèces reçues</span><span>${eur(v.paiement.recu)}</span></div><div class="l"><span>Rendu</span><span>${eur(renduDe(v))}</span></div>` : ""}
+    ${v.horsLigneLocal ? `<div class="c" style="font-size:11px">Ticket enregistré hors connexion</div>` : ""}
     <hr>
     <div class="c" style="font-size:11px">Articles vendus au nom et pour le compte des artisans et producteurs indiqués.<br>Merci de votre visite !</div>
   </div>`;
 }
+const renduDe = (v) => v.paiement.recu - (v.paiement.mode === "Mixte" ? v.paiement.especes : v.total);
 function showTicket(v) {
-  openModal(`${v.paiement.recu && !v.annulee ? `<div class="rendu" style="margin-bottom:12px">À rendre : ${eur(v.paiement.recu - v.total)}</div>` : ""}${ticketHTML(v)}<div class="row" style="margin-top:14px"><button class="btn ghost" id="tClose">Fermer</button><button class="btn" id="tPrint">Imprimer le ticket</button></div>`);
+  openModal(`${v.paiement.recu && !v.annulee ? `<div class="rendu" style="margin-bottom:12px">À rendre : ${eur(renduDe(v))}</div>` : ""}${ticketHTML(v)}<div class="row" style="margin-top:14px"><button class="btn ghost" id="tClose">Fermer</button><button class="btn" id="tPrint">Imprimer le ticket</button></div>`);
   $("#tClose").onclick = () => { closeModal(); $("#scan")?.focus(); };
   $("#tPrint").onclick = () => { $("#modal").classList.add("print-zone"); window.print(); $("#modal").classList.remove("print-zone"); };
 }
@@ -553,6 +634,100 @@ async function venteDuJour() {
   } catch (e) { msg($("#cmsg"), e.message); }
 }
 
+// ================== PLANNING DES PERMANENCES ==================
+async function planningView(cible, modeCaisse = false) {
+  const admin = S.role === "admin" && !!S.token && !modeCaisse;
+  const moi = S.role === "artisan" && !modeCaisse ? S.initiales : null;
+  let mois = thisMonth();
+  const base = modeCaisse ? "/caisse/planning" : "/planning";
+  const draw = async () => {
+    const jours = await api(`${base}?mois=${mois}`);
+    const [y, m] = mois.split("-").map(Number);
+    const auj = ymd(new Date());
+    const compte = {};
+    jours.forEach((j) => j.creneaux.forEach((c) => c.inscrits.forEach((x) => (compte[x.nom] = (compte[x.nom] || 0) + 1))));
+    cible.innerHTML = `<div class="card"><div class="row" style="align-items:center">
+        <button class="btn small ghost" id="plPrev" style="flex:0 0 auto">◀</button>
+        <h2 style="margin:0;text-align:center">Permanences – ${new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}</h2>
+        <button class="btn small ghost" id="plNext" style="flex:0 0 auto">▶</button></div>
+      <p class="muted">Mardi au samedi · matin 10h – 14h · après-midi 14h – 18h30 (19h le samedi) · 2 personnes le mardi et le samedi, 1 les autres jours. ${moi ? "Appuyez sur « Je prends » pour réserver un créneau." : "Tapez vos initiales dans une place libre pour la prendre."}</p>
+      <div id="plmsg"></div>
+      <table class="plan"><tr><th>Jour</th><th>Matin</th><th>Après-midi</th></tr>
+      ${jours.map((j) => `<tr style="${j.date === auj ? "background:#f3ede2" : ""}"><td><b>${new Date(j.date + "T12:00:00").toLocaleDateString("fr-FR", { weekday: "long", day: "numeric" })}</b></td>
+        ${j.creneaux.map((c) => `<td><div class="muted" style="font-size:12px">${esc(c.libelle)}</div><div class="slot">
+          ${c.inscrits.map((x) => `<span class="pill ${x.absent ? "abs" : ""} ${moi && x.initiales === moi ? "moi" : ""}" title="${esc(x.nom)}">${esc(x.initiales)}
+            ${admin ? `<button class="btn small ghost" style="padding:0 6px" data-del="${j.date}|${c.id}|${x.artisanId}" title="Retirer">✕</button>${x.absent ? "" : `<button class="btn small danger" style="padding:0 6px" data-abs="${j.date}|${c.id}|${x.artisanId}" title="Absent : pénalité">Absent</button>`}` : ""}
+            ${moi && x.initiales === moi && j.date > auj ? `<button class="btn small ghost" style="padding:0 6px" data-moidel="${j.date}|${c.id}">✕</button>` : ""}</span>`).join("")}
+          ${c.inscrits.length < c.places && (admin || j.date >= auj) ? Array.from({ length: c.places - c.inscrits.length }, () => moi
+            ? (c.inscrits.some((x) => x.initiales === moi) ? "" : `<button class="btn small" data-prendre="${j.date}|${c.id}">Je prends</button>`)
+            : `<input data-ini="${j.date}|${c.id}" placeholder="Initiales" maxlength="4" style="width:90px;padding:4px 8px;text-transform:uppercase">`).join("") : ""}
+        </div></td>`).join("")}</tr>`).join("")}</table></div>
+      ${admin ? `<div class="card"><h2>Permanences du mois par artisan</h2><table>${Object.entries(compte).sort().map(([n, k]) => `<tr><td>${esc(n)}</td><td class="num">${k}</td></tr>`).join("") || "<tr><td class='muted'>Aucune inscription.</td></tr>"}</table>
+        <p class="muted">« Absent » applique la pénalité prévue au contrat ; elle apparaît sur le relevé mensuel de l'artisan.</p></div>` : ""}`;
+    $("#plPrev").onclick = () => { const d = new Date(y, m - 2, 1); mois = ymd(d).slice(0, 7); draw(); };
+    $("#plNext").onclick = () => { const d = new Date(y, m, 1); mois = ymd(d).slice(0, 7); draw(); };
+    const err = (e) => msg($("#plmsg"), e.message);
+    cible.querySelectorAll("[data-prendre]").forEach((b) => (b.onclick = async () => { const [date, creneau] = b.dataset.prendre.split("|"); try { await api(base, { method: "POST", body: { date, creneau } }); draw(); } catch (e) { err(e); } }));
+    cible.querySelectorAll("[data-ini]").forEach((i) => (i.onchange = async () => { if (!i.value.trim()) return; const [date, creneau] = i.dataset.ini.split("|"); try { await api(base, { method: "POST", body: { date, creneau, initiales: i.value } }); draw(); } catch (x) { err(x); } }));
+    cible.querySelectorAll("[data-moidel]").forEach((b) => (b.onclick = async () => { const [date, creneau] = b.dataset.moidel.split("|"); try { await api(`/planning?date=${date}&creneau=${creneau}`, { method: "DELETE" }); draw(); } catch (e) { err(e); } }));
+    cible.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => { const [date, creneau, id] = b.dataset.del.split("|"); await api(`/planning?date=${date}&creneau=${creneau}&artisanId=${id}`, { method: "DELETE" }); draw(); }));
+    cible.querySelectorAll("[data-abs]").forEach((b) => (b.onclick = async () => { if (!confirm("Marquer absent ? La pénalité sera ajoutée au relevé du mois.")) return; const [date, creneau, artisanId] = b.dataset.abs.split("|"); await api("/planning/absence", { method: "POST", body: { date, creneau, artisanId } }); draw(); }));
+  };
+  draw().catch((e) => (cible.innerHTML = `<div class="msg err">${esc(e.message)}</div>`));
+}
+
+// ================== RELEVÉ MENSUEL ET FACTURE DE COMMISSION ==================
+async function imprimerReleve(mois, artisanId) {
+  const r = await api(`/releve?mois=${mois}${artisanId ? "&artisanId=" + artisanId : ""}`);
+  const b = r.boutique, mm = new Date(mois + "-15").toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  const facture = r.commission + r.totalPenalites;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relevé ${esc(r.artisan.nom)} ${mois}</title><style>
+    body{font-family:Arial,sans-serif;font-size:12px;color:#222;max-width:190mm;margin:10mm auto}h1{font-size:18px;margin:0}h2{font-size:14px;margin:22px 0 8px;border-bottom:2px solid #6f8f72;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse}th,td{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}td.n,th.n{text-align:right}
+    .head{display:flex;justify-content:space-between;gap:20px}.box{border:1px solid #ccc;border-radius:6px;padding:10px;min-width:45%}
+    .tot td{font-weight:700;border-top:2px solid #222}.big{font-size:16px}.no-print{background:#4f6d52;color:#fff;text-align:center;padding:10px;cursor:pointer;margin-bottom:10px}
+    @media print{.no-print{display:none}h2{break-after:avoid}.page2{break-before:page}}</style></head><body>
+    <div class="no-print" onclick="window.print()">Imprimer ou enregistrer en PDF</div>
+    <div class="head"><div><h1>${esc(b.nom)}</h1>${esc(b.adresse)}${b.siret ? "<br>SIRET " + esc(b.siret) : ""}</div>
+      <div class="box"><b>${esc(r.artisan.nom)}</b> (${esc(r.artisan.initiales)})<br>${esc(r.artisan.email || "")} ${esc(r.artisan.telephone || "")}<br>Stand ${esc(r.artisan.stand || "")}</div></div>
+
+    <h2>Facture de commission n° ${esc(r.facture.numero)}</h2>
+    <p>Date : ${new Date().toLocaleDateString("fr-FR")} · Période : ${mm}</p>
+    <table><tr><th>Désignation</th><th class="n">Montant</th></tr>
+      <tr><td>Commission de ${r.commissionTaux} % sur les ventes réalisées pour votre compte (${eur(r.ca)})</td><td class="n">${eur(r.commission)}</td></tr>
+      ${r.penalites.map((x) => `<tr><td>Pénalité : ${esc(x.motif)} le ${fd(x.date)} (${x.creneau === "matin" ? "matin" : "après-midi"})</td><td class="n">${eur(x.montant)}</td></tr>`).join("")}
+      <tr class="tot"><td>Total ${esc(b.mentionTVA ? "" : "TTC")}</td><td class="n big">${eur(facture)}</td></tr></table>
+    <p style="font-size:11px">${esc(b.mentionTVA)}<br>Montant déduit des ventes reversées ci-dessous.</p>
+
+    <h2>Relevé des ventes et reversement</h2>
+    <table>
+      <tr><td>Ventes réalisées pour votre compte</td><td class="n">${eur(r.ca)}</td></tr>
+      <tr><td>Commission de la boutique (${r.commissionTaux} %)</td><td class="n">−${eur(r.commission)}</td></tr>
+      ${r.totalPenalites ? `<tr><td>Pénalités</td><td class="n">−${eur(r.totalPenalites)}</td></tr>` : ""}
+      <tr class="tot"><td>${r.aReverser >= 0 ? "Montant reversé" : "Reste dû à la boutique"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
+    <p style="font-size:11px">Loyer du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer)} par mois, réglé à l'avance selon le contrat.</p>
+
+    <h2 class="page2">Détail des ventes</h2>
+    <table><tr><th>Date</th><th>Ticket</th><th>Réf.</th><th>Article</th><th class="n">Qté</th><th class="n">Prix</th><th class="n">Total</th></tr>
+      ${r.lignes.map((l) => `<tr><td>${new Date(l.date).toLocaleDateString("fr-FR")}</td><td>${esc(l.ticket)}</td><td>${esc(l.ref)}</td><td>${esc(l.nom)}</td><td class="n">${l.qte}</td><td class="n">${eur(l.pu)}</td><td class="n">${eur(l.total)}</td></tr>`).join("") || `<tr><td colspan="7">Aucune vente ce mois-ci.</td></tr>`}
+      <tr class="tot"><td colspan="6">Total</td><td class="n">${eur(r.ca)}</td></tr></table>
+    </body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); } else alert("Autorisez les fenêtres pop-up pour ce site.");
+}
+function exporterCompta(du, au) {
+  api(`/export?du=${du}&au=${au}`).then((V) => {
+    const n = (c) => ((c || 0) / 100).toFixed(2).replace(".", ",");
+    const rows = [["Date", "Heure", "Ticket", "Statut", "Paiement", "Part CB", "Part espèces", "Artisan", "Référence", "Article", "Quantité", "Prix unitaire", "Remise", "Total ligne"]];
+    for (const v of V) {
+      const d = new Date(v.date), cb = v.paiement.mode === "Mixte" ? v.paiement.cb : v.paiement.mode === "CB" ? v.total : 0, es = v.paiement.mode === "Mixte" ? v.paiement.especes : v.paiement.mode === "Espèces" ? v.total : 0;
+      for (const l of v.lignes) rows.push([d.toLocaleDateString("fr-FR"), d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }), v.numero, v.annulee ? "Annulée" : "Valide", v.paiement.mode, n(cb), n(es), l.artisanNom, l.ref, l.nom, l.qte, n(l.pu), n((l.remise?.montant || 0) + (l.remiseTicket || 0)), n(l.total)]);
+    }
+    const csv = "﻿" + rows.map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = `export-ventes-${du}-au-${au}.csv`; a.click();
+  }).catch((e) => alert(e.message));
+}
+
 // ================== ESPACE ARTISAN ==================
 async function artisanCatalogue() {
   app.innerHTML = `<div class="grid2">
@@ -697,7 +872,10 @@ function barres(data, val, lbl) {
 // ---- Espace artisan : mes ventes ----
 async function artisanVentes() {
   const pp = periodPicker((du, au) => detail(du, au));
-  app.innerHTML = `<div class="card"><h2>Mes chiffres</h2><div id="resume"><p class="muted">Chargement…</p></div></div>${pp.html}<div id="vres"></div>`;
+  app.innerHTML = `<div class="card"><h2>Mes chiffres</h2><div id="resume"><p class="muted">Chargement…</p></div></div>
+    <div class="card"><h2>Mon relevé et ma facture du mois</h2><div class="row"><div><label>Mois</label><input type="month" id="relM" value="${thisMonth()}"></div><div style="flex:0 0 auto"><button class="btn osb" id="relGo">Afficher / imprimer</button></div></div></div>
+    ${pp.html}<div id="vres"></div>`;
+  $("#relGo").onclick = () => imprimerReleve($("#relM").value).catch((e) => alert(e.message));
   try {
     const r = await api("/stats/resume");
     $("#resume").innerHTML = `<table><tr><th>Période</th><th class="num">Mes ventes</th><th class="num">Articles</th><th class="num">Ce qui me revient</th><th class="num">CA total du magasin</th></tr>
@@ -774,7 +952,8 @@ async function adminDashboard() {
       <div class="card"><h2>Classement des artisans</h2>
         <table><tr><th>#</th><th>Artisan</th><th class="num">Articles</th><th class="num">Ventes</th><th class="num">Part du CA</th><th class="num">Commission</th><th class="num">À reverser</th></tr>
         ${d.parArtisan.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.artisanNom)}</td><td class="num">${r.articles}</td><td class="num">${eur(r.ca)}</td><td class="num">${d.totalMagasin ? Math.round((r.ca / d.totalMagasin) * 100) : 0} %</td><td class="num">${eur(r.commission)}</td><td class="num"><b>${eur(r.net)}</b></td></tr>`).join("") || `<tr><td colspan="7" class="muted">Aucune vente sur la période.</td></tr>`}</table>
-        <button class="btn small ghost" style="margin-top:10px" id="csv">Exporter le relevé en CSV</button></div>
+        <button class="btn small ghost" style="margin-top:10px" id="csv">Exporter le classement en CSV</button>
+        <button class="btn small osb" style="margin-top:10px" id="compta">Export comptable des ventes (CSV)</button></div>
       <div class="card"><div class="row" style="align-items:flex-end"><h2 style="margin:0">Top 10 des articles</h2>
         <div><label>Artisan</label><select id="topArt"><option value="">Tous les artisans</option>${d.parArtisan.map((r) => `<option value="${r.artisanId}">${esc(r.artisanNom)}</option>`).join("")}</select></div></div>
         <div class="grid2" id="tops" style="margin-top:10px"></div></div>`;
@@ -785,6 +964,7 @@ async function adminDashboard() {
         <div><h3>En quantité</h3><table>${qte.map((x, i) => `<tr><td>${i + 1}. ${esc(x.nom)}<div class="muted">${esc(x.artisanNom)} · ${eur(x.ca)}</div></td><td class="num">${x.qte}</td></tr>`).join("") || "<tr><td class='muted'>Aucune vente.</td></tr>"}</table></div>`;
     };
     $("#topArt").onchange = tops; tops();
+    $("#compta").onclick = () => exporterCompta(d.du, d.au);
     $("#csv").onclick = () => {
       const rows = [["Artisan", "Articles", "Ventes", "Commission", "A reverser"], ...d.parArtisan.map((r) => [r.artisanNom, r.articles, (r.ca / 100).toFixed(2).replace(".", ","), (r.commission / 100).toFixed(2).replace(".", ","), (r.net / 100).toFixed(2).replace(".", ",")])];
       const blob = new Blob(["﻿" + rows.map((r) => r.join(";")).join("\n")], { type: "text/csv" });
@@ -854,7 +1034,7 @@ function finEngagement(ymd) { const d = new Date(ymd + "T12:00:00"); d.setMonth(
 async function adminArtisans() {
   app.innerHTML = `<div class="grid2">
     <div class="card"><h2>Ajouter un artisan</h2>
-      <div class="row"><div><label>Nom affiché *</label><input id="aNom" placeholder="ex. Marie Dupont – Bijoux"></div><div style="max-width:120px"><label>Initiales *</label><input id="aIni" maxlength="4" placeholder="MD"></div></div>
+      <div class="row"><div><label>Nom affiché *</label><input id="aNom" placeholder="ex. Marie Dupont – Bijoux"></div><div style="max-width:120px"><label>Initiales * (2 ou 3 lettres)</label><input id="aIni" maxlength="4" placeholder="MD ou MDU"></div></div>
       <div class="row"><div><label>Identifiant de connexion *</label><input id="aId" placeholder="ex. marie.dupont"></div><div><label>Mot de passe provisoire *</label><input id="aPw"></div></div>
       <div class="row"><div><label>Métier</label><input id="aMet"></div><div><label>Stand</label><select id="aStand"><option>1 m</option><option>2 m</option></select></div></div>
       <label>Date de début du contrat</label><input type="date" id="aDeb">
@@ -866,10 +1046,14 @@ async function adminArtisans() {
     const A = await api("/artisans");
     $("#alist").innerHTML = `<table><tr><th>Artisan</th><th>Identifiant</th><th>Stand</th><th>Contrat</th><th></th></tr>
       ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}</td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
-      <td class="num"><button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
+      <td class="num"><button class="btn small osb" data-rel="${a.id}">Relevé / facture</button> <button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
     $("#alist").querySelectorAll("[data-pw]").forEach((b) => (b.onclick = async () => {
       const pw = prompt("Nouveau mot de passe (6 caractères min.) :"); if (!pw) return;
       try { await api("/artisans/" + b.dataset.pw, { method: "PUT", body: { motdepasse: pw } }); alert("Mot de passe modifié."); } catch (e) { alert(e.message); }
+    }));
+    $("#alist").querySelectorAll("[data-rel]").forEach((b) => (b.onclick = () => {
+      const m = prompt("Mois du relevé (AAAA-MM) :", thisMonth()); if (!m) return;
+      imprimerReleve(m, b.dataset.rel).catch((e) => alert(e.message));
     }));
     $("#alist").querySelectorAll("[data-deb]").forEach((b) => (b.onclick = async () => {
       const d = prompt("Date de début du contrat (format AAAA-MM-JJ, ex. 2027-01-05) :", b.dataset.v); if (d === null) return;
@@ -910,6 +1094,10 @@ async function adminParametres() {
       <label>Nom de la boutique (affiché sur les tickets)</label><input id="sNom" value="${esc(s.nomBoutique)}">
       <label>Adresse (ticket)</label><input id="sAdr" value="${esc(s.adresse)}">
       <label>Commission de la boutique (%)</label><input id="sCom" type="number" value="${s.commission}">
+      <label>SIRET (relevés et factures)</label><input id="sSiret" value="${esc(s.siret || "")}">
+      <label>Mention TVA sur les factures</label><input id="sTva" value="${esc(s.mentionTVA || "")}">
+      <div class="row"><div><label>Loyer stand 1 m (€)</label><input id="sP1" inputmode="decimal" value="${(s.prixStand1 / 100).toFixed(2).replace(".", ",")}"></div><div><label>Loyer stand 2 m (€)</label><input id="sP2" inputmode="decimal" value="${(s.prixStand2 / 100).toFixed(2).replace(".", ",")}"></div></div>
+      <label>Pénalité permanence non assurée (€)</label><input id="sPen" inputmode="decimal" value="${(s.penalite / 100).toFixed(2).replace(".", ",")}">
       <label>Fond de caisse laissé dans le tiroir (€)</label><input id="sFond" inputmode="decimal" value="${(s.fondReserve / 100).toFixed(2).replace(".", ",")}">
       <div id="smsg"></div><button class="btn" id="sGo" style="margin-top:10px">Enregistrer</button></div>
     <div class="card"><h2>Poste caisse</h2>
@@ -921,7 +1109,7 @@ async function adminParametres() {
     </div>
     <div class="card"><h2>Mot de passe gérance</h2><label>Nouveau mot de passe</label><input type="password" id="apw"><div id="apm"></div><button class="btn" id="apgo" style="margin-top:10px">Changer</button></div></div>`;
   $("#sGo").onclick = async () => {
-    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
+    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, penalite: $("#sPen").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
     catch (e) { msg($("#smsg"), e.message); }
   };
   if ($("#act")) $("#act").onclick = async () => {
@@ -935,7 +1123,9 @@ async function adminParametres() {
   };
 }
 
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 start();
+synchroniser();
 </script>
 </body>
 </html>

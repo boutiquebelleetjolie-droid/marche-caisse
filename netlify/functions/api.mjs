@@ -2,6 +2,7 @@ import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 
 // ---------- Utilitaires ----------
+class UErr extends Error {} // erreur à afficher telle quelle à l'utilisateur
 const store = () => getStore({ name: "marche", consistency: "strong" });
 const json = (data, status = 200) => Response.json(data, { status });
 const err = (msg, status = 400) => json({ erreur: msg }, status);
@@ -50,6 +51,11 @@ async function getSettings() {
     commission: 20,
     adresse: "",
     fondReserve: 8000,
+    siret: "",
+    mentionTVA: "TVA non applicable, art. 293 B du CGI",
+    prixStand1: 10000,
+    prixStand2: 18000,
+    penalite: 8000,
     ...((await getJSON("settings")) || {}),
   };
 }
@@ -116,7 +122,7 @@ function analyse(ventes) {
   for (const v of ventes) {
     const d = parisDate(v.date);
     (parJour[d] ||= { date: d, ca: 0, tickets: 0 }); parJour[d].ca += v.total; parJour[d].tickets++;
-    parMode[v.paiement.mode] = (parMode[v.paiement.mode] || 0) + v.total;
+    for (const [k, x] of Object.entries(montantsParMode(v))) parMode[k] = (parMode[k] || 0) + x;
     const h = parisHeure(v.date); (parHeure[h] ||= { heure: h, ca: 0, tickets: 0 }); parHeure[h].ca += v.total; parHeure[h].tickets++;
     for (const l of v.lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, artisanId: l.artisanId, artisanNom: l.artisanNom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
   }
@@ -144,7 +150,7 @@ async function calculerZ(jour, comptageFermeture) {
   const annulees = toutes.filter((v) => v.annulee);
   const [ouverture, sorties] = await Promise.all([getJSON(`caisse/${jour}/ouverture`), listJSON(`caisse/${jour}/sorties/`)]);
   const parMode = {};
-  for (const v of ventes) parMode[v.paiement.mode] = (parMode[v.paiement.mode] || 0) + v.total;
+  Object.assign(parMode, cumulModes(ventes));
   const ca = ventes.reduce((t, v) => t + v.total, 0);
   const articles = ventes.reduce((t, v) => t + v.lignes.reduce((a, l) => a + l.qte, 0), 0);
   const especes = parMode["Espèces"] || 0;
@@ -164,6 +170,95 @@ async function calculerZ(jour, comptageFermeture) {
   };
 }
 
+// Remise : { type: "%" | "€", valeur }
+function calcRemise(r, base) {
+  if (!r || !r.valeur) return 0;
+  const v = Number(String(r.valeur).replace(",", "."));
+  if (!(v > 0)) return 0;
+  return Math.min(base, r.type === "%" ? Math.round((base * Math.min(v, 100)) / 100) : Math.round(v * 100));
+}
+// Répartition d'un ticket par moyen de paiement (le paiement mixte est réparti)
+function montantsParMode(v) {
+  if (v.paiement.mode === "Mixte") return { CB: v.paiement.cb || 0, "Espèces": v.paiement.especes || 0 };
+  return { [v.paiement.mode]: v.total };
+}
+function cumulModes(ventes) {
+  const r = {};
+  for (const v of ventes) for (const [k, x] of Object.entries(montantsParMode(v))) r[k] = (r[k] || 0) + x;
+  return r;
+}
+
+// ---- Planning des permanences ----
+// Mardi à samedi. Matin 10h-14h, après-midi 14h-18h30 (19h le samedi). 2 personnes le mardi et le samedi, 1 les autres jours.
+function creneauxDuJour(ymd) {
+  const j = new Date(ymd + "T12:00:00Z").getUTCDay(); // 0 dim, 1 lun
+  if (j === 0 || j === 1) return [];
+  const places = j === 2 || j === 6 ? 2 : 1;
+  return [
+    { id: "matin", libelle: "Matin 10h – 14h", places },
+    { id: "aprem", libelle: j === 6 ? "Après-midi 14h – 19h" : "Après-midi 14h – 18h30", places },
+  ];
+}
+async function planningMois(mois) {
+  const [y, m] = mois.split("-").map(Number);
+  const nb = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const inscrits = await listJSON(`planning/${mois}`);
+  const jours = [];
+  for (let d = 1; d <= nb; d++) {
+    const ymd = `${mois}-${String(d).padStart(2, "0")}`;
+    const cr = creneauxDuJour(ymd);
+    if (!cr.length) continue;
+    jours.push({ date: ymd, creneaux: cr.map((c) => ({ ...c, inscrits: inscrits.filter((x) => x.date === ymd && x.creneau === c.id) })) });
+  }
+  return jours;
+}
+async function inscrire(date, creneau, a) {
+  const c = creneauxDuJour(date).find((x) => x.id === creneau);
+  if (!c) throw new UErr("Pas de permanence ce jour-là");
+  const deja = await listJSON(`planning/${date.slice(0, 7)}`);
+  const ici = deja.filter((x) => x.date === date && x.creneau === creneau);
+  if (ici.some((x) => x.artisanId === a.id)) throw new UErr("Vous êtes déjà inscrit sur ce créneau");
+  if (ici.length >= c.places) throw new UErr("Ce créneau est complet");
+  const e = { date, creneau, artisanId: a.id, initiales: a.initiales, nom: a.nom, inscritLe: new Date().toISOString(), absent: false };
+  await setJSON(`planning/${date.slice(0, 7)}/${date}/${creneau}/${a.id}`, e);
+  return e;
+}
+async function artisanParInitiales(ini) {
+  const I = String(ini || "").trim().toUpperCase();
+  return (await listJSON("artisans/")).find((a) => a.initiales === I && a.actif);
+}
+// Relevé mensuel + facture de commission d'un artisan
+async function releve(mois, artisanId) {
+  const s = await getSettings();
+  const a = await getJSON(`artisans/${artisanId}`);
+  if (!a) throw new UErr("Artisan introuvable");
+  const [y, m] = mois.split("-").map(Number);
+  const du = `${mois}-01`, au = `${mois}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
+  const ventes = (await ventesEntre(du, au)).filter((v) => !v.annulee);
+  const lignes = [];
+  for (const v of ventes) for (const l of v.lignes) if (l.artisanId === artisanId) lignes.push({ date: v.date, ticket: v.numero, ref: l.ref, nom: l.nom, qte: l.qte, pu: l.pu, total: l.total });
+  lignes.sort((p, q) => p.date.localeCompare(q.date));
+  const ca = lignes.reduce((t, l) => t + l.total, 0);
+  const commission = Math.round((ca * s.commission) / 100);
+  const penalites = (await listJSON(`penalites/${mois}/`)).filter((x) => x.artisanId === artisanId);
+  const totalPenalites = penalites.reduce((t, x) => t + x.montant, 0);
+  const loyer = a.stand === "2 m" ? s.prixStand2 : s.prixStand1;
+  // numéro de facture attribué une seule fois par artisan et par mois
+  let fac = await getJSON(`factures/${mois}/${artisanId}`);
+  if (!fac) {
+    const cpt = ((await getJSON("compteurFacture"))?.n || 0) + 1;
+    await setJSON("compteurFacture", { n: cpt });
+    fac = { numero: `F${mois.replace("-", "")}-${String(cpt).padStart(4, "0")}`, emiseLe: new Date().toISOString() };
+    await setJSON(`factures/${mois}/${artisanId}`, fac);
+  }
+  return {
+    mois, du, au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA },
+    artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand },
+    lignes, ca, commissionTaux: s.commission, commission, penalites, totalPenalites, loyer,
+    aReverser: ca - commission - totalPenalites, facture: fac,
+  };
+}
+
 // ---- Annulations, modifications, journal ----
 async function majStock(ref, delta) {
   const p = await getJSON(`products/${ref}`);
@@ -179,7 +274,7 @@ async function journaliser(e) {
 async function annulerVente(mois, id, { ligne = null, motif = "", par = "" }) {
   const key = `sales/${mois}/${id}`;
   const v = await getJSON(key);
-  if (!v) throw new Error("Vente introuvable");
+  if (!v) throw new UErr("Vente introuvable");
   if (v.annulee) return v;
   v.historique ||= [];
   if (ligne === null || ligne === undefined) {
@@ -189,9 +284,10 @@ async function annulerVente(mois, id, { ligne = null, motif = "", par = "" }) {
     await journaliser({ type: "Annulation de ticket", ticket: v.numero, montant: v.total, motif, par });
   } else {
     const l = v.lignes[ligne];
-    if (!l) throw new Error("Ligne introuvable");
+    if (!l) throw new UErr("Ligne introuvable");
     v.lignes.splice(ligne, 1);
     v.total -= l.total;
+    if (v.paiement.mode === "Mixte") { v.paiement.cb = Math.max(0, (v.paiement.cb || 0) - l.total); v.paiement.especes = v.total - v.paiement.cb; }
     await majStock(l.ref, l.qte);
     v.historique.push({ date: new Date().toISOString(), action: `Ligne annulée : ${l.qte} × ${l.nom} (${l.artisanNom})`, motif, par });
     await journaliser({ type: "Annulation de ligne", ticket: v.numero, detail: `${l.qte} × ${l.nom} (${l.artisanNom})`, montant: l.total, motif, par });
@@ -266,6 +362,10 @@ export default async (req) => {
       if (path === "/caisse/ventes" && m === "POST") {
         const lignesIn = Array.isArray(body.lignes) ? body.lignes : [];
         if (!lignesIn.length) return err("Panier vide");
+        // vente enregistrée hors connexion : même identifiant => pas de doublon
+        const idClient = /^[a-f0-9-]{36}$/.test(body.id || "") ? body.id : null;
+        const date = idClient && body.date && !isNaN(Date.parse(body.date)) ? new Date(body.date).toISOString() : new Date().toISOString();
+        if (idClient) { const ex = await getJSON(`sales/${moisDe(date)}/${idClient}`); if (ex) return json(ex); }
         const arts = Object.fromEntries((await listJSON("artisans/")).map((a) => [a.id, a]));
         const lignes = [];
         for (const l of lignesIn) {
@@ -273,19 +373,30 @@ export default async (req) => {
           if (!p) return err(`Article inconnu : ${l.ref}`);
           const qte = Math.max(1, parseInt(l.qte, 10) || 1);
           const artisanNom = p.artisanId === "boutique" ? "Boutique" : arts[p.artisanId]?.nom || "";
-          lignes.push({ ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom, qte, pu: p.prix, total: p.prix * qte });
+          const brut = p.prix * qte;
+          const remise = calcRemise(l.remise, brut);
+          lignes.push({ ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom, qte, pu: p.prix, remise: remise ? { ...l.remise, montant: remise } : null, total: brut - remise });
         }
-        const total = lignes.reduce((s, l) => s + l.total, 0);
+        // remise sur tout le ticket : répartie au prorata sur les lignes
+        let remiseTicket = null;
+        const sousTotal = lignes.reduce((t, l) => t + l.total, 0);
+        const rt = calcRemise(body.remiseTicket, sousTotal);
+        if (rt > 0) {
+          let reste = rt;
+          lignes.forEach((l, i) => { const part = i === lignes.length - 1 ? reste : Math.round((rt * l.total) / sousTotal); l.total -= part; l.remiseTicket = part; reste -= part; });
+          remiseTicket = { ...body.remiseTicket, montant: rt };
+        }
+        const total = lignes.reduce((t, l) => t + l.total, 0);
         const pay = body.paiement || {};
-        const paiement = { mode: pay.mode || "CB", recu: pay.recu ? toCents(pay.recu) : null };
-        const date = new Date().toISOString();
-        const vente = { id: uid(), numero: `${date.slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-5)}`, date, lignes, total, paiement, poste: dev.nom, annulee: false };
-        await setJSON(`sales/${moisDe(date)}/${vente.id}`, vente);
-        // mise à jour des stocks
-        for (const l of lignes) {
-          const p = await getJSON(`products/${l.ref}`);
-          if (p && typeof p.stock === "number") { p.stock = Math.max(0, p.stock - l.qte); await setJSON(`products/${p.ref}`, p); }
+        const paiement = { mode: ["CB", "Espèces", "Mixte"].includes(pay.mode) ? pay.mode : "CB", recu: pay.recu ? toCents(pay.recu) : null };
+        if (paiement.mode === "Mixte") {
+          paiement.cb = toCents(pay.cb || 0);
+          paiement.especes = total - paiement.cb;
+          if (paiement.cb < 0 || paiement.especes < 0) return err("Montants du paiement mixte incorrects");
         }
+        const vente = { id: idClient || uid(), numero: `${parisDate(date).replace(/-/g, "")}-${Date.parse(date).toString().slice(-5)}`, date, lignes, remiseTicket, total, paiement, poste: dev.nom, horsLigne: !!idClient, annulee: false };
+        await setJSON(`sales/${moisDe(date)}/${vente.id}`, vente);
+        for (const l of lignes) await majStock(l.ref, -l.qte);
         return json(vente);
       }
 
@@ -340,6 +451,12 @@ export default async (req) => {
         if (!gerant && (!motif || !par)) return err("Justification et nom obligatoires");
         return json(await journaliser({ type: body.type === "panier" ? "Panier vidé avant encaissement" : "Ligne supprimée avant encaissement", detail: String(body.detail || ""), montant: Math.round(Number(body.montant) || 0), motif, par: gerant ? "Gérance" : par, poste: dev.nom }));
       }
+      if (path === "/caisse/planning" && m === "GET") return json(await planningMois(url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7)));
+      if (path === "/caisse/planning" && m === "POST") {
+        const a = await artisanParInitiales(body.initiales);
+        if (!a) return err("Initiales inconnues");
+        return json(await inscrire(String(body.date), String(body.creneau), a));
+      }
       if (path === "/caisse/attente" && m === "GET") return json((await listJSON("attente/")).sort((a, b) => a.date.localeCompare(b.date)));
       if (path === "/caisse/attente" && m === "POST") {
         const t = { id: uid(), date: new Date().toISOString(), nom: String(body.nom || "").trim(), lignes: body.lignes || [], poste: dev.nom };
@@ -354,7 +471,7 @@ export default async (req) => {
         const ventes = (await ventesEntre(jour, jour)).filter((v) => parisDate(v.date) === jour);
         const ok = ventes.filter((v) => !v.annulee);
         const parMode = {};
-        for (const v of ok) parMode[v.paiement.mode] = (parMode[v.paiement.mode] || 0) + v.total;
+        Object.assign(parMode, cumulModes(ok));
         return json({ jour, ventes, total: ok.reduce((s, v) => s + v.total, 0), nbVentes: ok.length, parMode });
       }
       return err("Route inconnue", 404);
@@ -424,6 +541,52 @@ export default async (req) => {
         return json(p);
       }
       if (m === "DELETE") { p.actif = false; await setJSON(`products/${p.ref}`, p); return json({ ok: true }); }
+    }
+
+    // --- Planning des permanences ---
+    if (path === "/planning" && m === "GET") return json(await planningMois(url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7)));
+    if (path === "/planning" && m === "POST") {
+      const a = isAdmin ? await artisanParInitiales(body.initiales) : await getJSON(`artisans/${user.id}`);
+      if (!a) return err("Initiales inconnues");
+      if (!isAdmin && String(body.date) < parisDate(new Date().toISOString())) return err("Ce jour est passé");
+      return json(await inscrire(String(body.date), String(body.creneau), a));
+    }
+    if (path === "/planning" && m === "DELETE") {
+      const date = url.searchParams.get("date"), creneau = url.searchParams.get("creneau");
+      const artisanId = isAdmin ? url.searchParams.get("artisanId") : user.id;
+      if (!isAdmin && date <= parisDate(new Date().toISOString())) return err("Vous ne pouvez plus vous désinscrire de ce créneau : prévenez la gérance");
+      await store().delete(`planning/${date.slice(0, 7)}/${date}/${creneau}/${artisanId}`);
+      return json({ ok: true });
+    }
+    if (path === "/planning/absence" && m === "POST") {
+      if (!isAdmin) return err("Réservé à la gérance", 403);
+      const key = `planning/${String(body.date).slice(0, 7)}/${body.date}/${body.creneau}/${body.artisanId}`;
+      const e = await getJSON(key);
+      if (!e) return err("Inscription introuvable");
+      if (e.absent) return json(e);
+      e.absent = true;
+      await setJSON(key, e);
+      const pen = { id: uid(), artisanId: e.artisanId, nom: e.nom, date: e.date, creneau: e.creneau, montant: settings.penalite, motif: "Permanence non assurée" };
+      await setJSON(`penalites/${e.date.slice(0, 7)}/${pen.id}`, pen);
+      return json(e);
+    }
+    if (path === "/penalites" && m === "GET") {
+      const mois = url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7);
+      const all = await listJSON(`penalites/${mois}/`);
+      return json(isAdmin ? all : all.filter((x) => x.artisanId === user.id));
+    }
+
+    // --- Relevé mensuel et facture de commission ---
+    if (path === "/releve" && m === "GET") {
+      const mois = url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7);
+      const artisanId = isAdmin ? url.searchParams.get("artisanId") : user.id;
+      return json(await releve(mois, artisanId));
+    }
+
+    // --- Export comptable ---
+    if (path === "/export" && m === "GET") {
+      if (!isAdmin) return err("Réservé à la gérance", 403);
+      return json(await ventesEntre(url.searchParams.get("du"), url.searchParams.get("au")));
     }
 
     // --- Statistiques ---
@@ -522,7 +685,8 @@ export default async (req) => {
       for (const ref of new Set([...Object.keys(qa), ...Object.keys(qn)])) { const d = (qa[ref] || 0) - (qn[ref] || 0); if (d) await majStock(ref, d); }
       v.lignes = nouvelles;
       v.total = nouvelles.reduce((t, l) => t + l.total, 0);
-      if (body.mode) v.paiement = { ...v.paiement, mode: body.mode };
+      if (body.mode && body.mode !== "Mixte") v.paiement = { mode: body.mode, recu: null };
+      else if (v.paiement.mode === "Mixte") v.paiement.cb = Math.max(0, v.total - (v.paiement.especes || 0)), v.paiement.especes = v.total - v.paiement.cb;
       v.historique ||= [];
       v.historique.push({ date: new Date().toISOString(), action: `Ticket modifié (${(avant.total / 100).toFixed(2)} € → ${(v.total / 100).toFixed(2)} €)`, motif: String(body.motif || "").trim(), par: "Gérance", avant });
       await setJSON(key, v);
@@ -547,6 +711,8 @@ export default async (req) => {
       if (body.adresse != null) s.adresse = String(body.adresse).trim();
       if (body.commission != null) s.commission = Math.min(100, Math.max(0, Number(body.commission) || 0));
       if (body.fondReserve != null && body.fondReserve !== "") s.fondReserve = Math.max(0, toCents(body.fondReserve));
+      for (const k of ["siret", "mentionTVA"]) if (body[k] != null) s[k] = String(body[k]).trim();
+      for (const k of ["prixStand1", "prixStand2", "penalite"]) if (body[k] != null && body[k] !== "") s[k] = Math.max(0, toCents(body[k]));
       await setJSON("settings", s);
       return json(s);
     }
@@ -566,6 +732,7 @@ export default async (req) => {
 
     return err("Route inconnue", 404);
   } catch (e) {
+    if (e instanceof UErr) return err(e.message, 400);
     console.error(e);
     return err("Erreur serveur : " + e.message, 500);
   }
