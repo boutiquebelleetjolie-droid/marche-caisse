@@ -222,7 +222,10 @@ async function showCaisse() {
         <button class="btn" data-pay="CB">Carte</button>
         <button class="btn osb" data-pay="Espèces">Espèces</button>
       </div>
-      <button class="btn ghost small" id="cClear" style="margin-top:10px">Vider le panier</button>
+      <div class="row" style="margin-top:10px">
+        <button class="btn ghost small" id="cAtt">Mettre en attente</button>
+        <button class="btn ghost small" id="cAttList">Tickets en attente</button>
+        <button class="btn ghost small" id="cClear">Vider le panier</button></div>
     </div>
   </div>`;
   $("#cReload").onclick = loadProds;
@@ -232,7 +235,9 @@ async function showCaisse() {
   loadSession();
   $("#cEtiq").onclick = () => printLabels(PRODS);
   if ($("#cQuit")) $("#cQuit").onclick = showLogin;
-  $("#cClear").onclick = () => { CART = []; renderCart(); };
+  $("#cClear").onclick = () => { if (!CART.length) return; justifier("Vider le panier", { type: "panier", detail: CART.map((l) => l.qte + " × " + l.nom).join(", "), montant: CART.reduce((t, l) => t + l.prix * l.qte, 0) }, () => { CART = []; renderCart(); }); };
+  $("#cAtt").onclick = mettreEnAttente;
+  $("#cAttList").onclick = listeAttente;
   document.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => payer(b.dataset.pay)));
   const scan = $("#scan");
   scan.oninput = () => renderResults(scan.value);
@@ -286,10 +291,53 @@ function renderCart() {
       <div class="num"><b>${eur(l.prix * l.qte)}</b></div>
       <button class="btn small ghost" data-del="${i}">✕</button>
     </div>`).join("") || `<p class="muted">Scannez un article pour commencer.</p>`;
-  el.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const l = CART[b.dataset.i]; l.qte += +b.dataset.d; if (l.qte < 1) CART.splice(b.dataset.i, 1); renderCart(); }));
-  el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { CART.splice(b.dataset.del, 1); renderCart(); }));
+  const supprimer = (i, n) => { const l = CART[i]; justifier("Retirer un article du panier", { type: "ligne", detail: n + " × " + l.nom + " (" + l.artisanNom + ")", montant: l.prix * n }, () => { l.qte -= n; if (l.qte < 1) CART.splice(i, 1); renderCart(); }); };
+  el.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const i = +b.dataset.i; if (+b.dataset.d > 0) { CART[i].qte++; renderCart(); } else supprimer(i, 1); }));
+  el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => supprimer(+b.dataset.del, CART[+b.dataset.del].qte)));
   $("#total").textContent = eur(CART.reduce((s, l) => s + l.prix * l.qte, 0));
 }
+const estGerant = () => S.role === "admin" && !!S.token;
+// Demande une justification (sauf pour la gérance), l'enregistre dans le journal puis exécute l'action
+function justifier(titre, infos, action, appel) {
+  const envoyer = async (motif, par) => {
+    if (appel) return appel(motif, par);
+    await api("/caisse/journal", { method: "POST", body: { ...infos, motif, par } });
+  };
+  if (estGerant()) { envoyer("", "").then(action).catch((e) => alert(e.message)); return; }
+  openModal(`<h2>${esc(titre)}</h2><p class="muted">Une justification est demandée. Elle sera transmise à la gérance.</p>
+    ${infos.detail ? `<p><b>${esc(infos.detail)}</b></p>` : ""}
+    <label>Votre nom *</label><input id="jPar"><label>Justification *</label><textarea id="jMot" placeholder="ex. erreur de saisie, client a changé d'avis…"></textarea>
+    <div id="jmsg"></div><div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn danger" id="jGo">Confirmer</button></div>`);
+  $("#jGo").onclick = async () => {
+    const par = $("#jPar").value.trim(), motif = $("#jMot").value.trim();
+    if (!par || !motif) return msg($("#jmsg"), "Nom et justification obligatoires.");
+    try { await envoyer(motif, par); closeModal(); action(); } catch (e) { msg($("#jmsg"), e.message); }
+  };
+}
+async function mettreEnAttente() {
+  if (!CART.length) return msg($("#cmsg"), "Le panier est vide.");
+  const nom = prompt("Nom ou repère du client (facultatif) :", "");
+  if (nom === null) return;
+  try { await api("/caisse/attente", { method: "POST", body: { nom, lignes: CART } }); CART = []; renderCart(); msg($("#cmsg"), "Ticket mis en attente.", "ok"); }
+  catch (e) { msg($("#cmsg"), e.message); }
+}
+async function listeAttente() {
+  const L = await api("/caisse/attente");
+  openModal(`<h2>Tickets en attente</h2>
+    <table>${L.map((t, i) => `<tr><td><b>${esc(t.nom || "Sans nom")}</b><div class="muted">${fdate(t.date)} · ${t.lignes.reduce((s, l) => s + l.qte, 0)} art.</div></td><td class="num">${eur(t.lignes.reduce((s, l) => s + l.prix * l.qte, 0))}</td>
+      <td class="num"><button class="btn small" data-rep="${i}">Reprendre</button> <button class="btn small ghost" data-sup="${i}">Supprimer</button></td></tr>`).join("") || "<tr><td class='muted'>Aucun ticket en attente.</td></tr>"}</table>
+    <button class="btn ghost" style="margin-top:12px" onclick="closeModal()">Fermer</button>`);
+  document.querySelectorAll("[data-rep]").forEach((b) => (b.onclick = async () => {
+    const t = L[b.dataset.rep];
+    if (CART.length && !confirm("Le panier en cours sera remplacé. Continuer ?")) return;
+    CART = t.lignes.map((l) => { const p = PRODS.find((x) => x.ref === l.ref); return p ? { ...l, prix: p.prix, nom: p.nom } : l; });
+    await api("/caisse/attente/" + t.id, { method: "DELETE" }); closeModal(); renderCart();
+  }));
+  document.querySelectorAll("[data-sup]").forEach((b) => (b.onclick = () => { const t = L[b.dataset.sup];
+    justifier("Supprimer un ticket en attente", { type: "panier", detail: (t.nom || "Ticket en attente") + " : " + t.lignes.map((l) => l.qte + " × " + l.nom).join(", "), montant: t.lignes.reduce((s, l) => s + l.prix * l.qte, 0) },
+      async () => { await api("/caisse/attente/" + t.id, { method: "DELETE" }); listeAttente(); }); }));
+}
+
 function payer(mode) {
   if (!CART.length) return msg($("#cmsg"), "Le panier est vide.");
   const total = CART.reduce((s, l) => s + l.prix * l.qte, 0);
@@ -487,8 +535,19 @@ async function venteDuJour() {
       <div class="kpis"><div class="kpi"><div class="l">Total</div><div class="v">${eur(d.total)}</div></div><div class="kpi"><div class="l">Tickets</div><div class="v">${d.nbVentes}</div></div></div>
       ${Object.entries(d.parMode).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><b style="text-align:right">${eur(v)}</b></div>`).join("")}
       <h3>Tickets</h3>
-      <table>${d.ventes.map((v) => `<tr><td>${new Date(v.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</td><td>${v.lignes.reduce((s, l) => s + l.qte, 0)} art.</td><td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td></tr>`).join("") || "<tr><td>Aucune vente</td></tr>"}</table>
+      <table>${d.ventes.map((v, i) => `<tr><td>${new Date(v.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}<div class="muted">${v.lignes.map((l) => l.qte + " × " + esc(l.nom)).join("<br>")}</div></td><td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td>
+        <td class="num"><button class="btn small ghost" data-tk="${i}">Ticket</button>${v.annulee ? "" : ` <button class="btn small ghost" data-al="${i}">Annuler une ligne</button> <button class="btn small danger" data-at="${i}">Annuler le ticket</button>`}</td></tr>`).join("") || "<tr><td>Aucune vente</td></tr>"}</table>
       <button class="btn ghost" style="margin-top:12px" onclick="closeModal()">Fermer</button>`);
+    const annuler = (v, ligne, titre, detail) => justifier(titre, { detail }, () => venteDuJour(),
+      (motif, par) => api(`/caisse/ventes/${v.date.slice(0, 7)}/${v.id}/annuler`, { method: "POST", body: { ligne, motif, par } }));
+    document.querySelectorAll("[data-tk]").forEach((b) => (b.onclick = () => showTicket(d.ventes[b.dataset.tk])));
+    document.querySelectorAll("[data-at]").forEach((b) => (b.onclick = () => { const v = d.ventes[b.dataset.at]; if (estGerant() && !confirm("Annuler ce ticket de " + eur(v.total) + " ?")) return; annuler(v, null, "Annuler le ticket", `Ticket de ${eur(v.total)}`); }));
+    document.querySelectorAll("[data-al]").forEach((b) => (b.onclick = () => {
+      const v = d.ventes[b.dataset.al];
+      openModal(`<h2>Quelle ligne annuler ?</h2><table>${v.lignes.map((l, i) => `<tr><td>${l.qte} × ${esc(l.nom)}<div class="muted">${esc(l.artisanNom)}</div></td><td class="num">${eur(l.total)}</td><td class="num"><button class="btn small danger" data-li="${i}">Annuler</button></td></tr>`).join("")}</table><button class="btn ghost" style="margin-top:12px" id="liBack">Retour</button>`);
+      $("#liBack").onclick = venteDuJour;
+      document.querySelectorAll("[data-li]").forEach((x) => (x.onclick = () => { const l = v.lignes[x.dataset.li]; annuler(v, +x.dataset.li, "Annuler une ligne", `${l.qte} × ${l.nom} (${l.artisanNom}) – ${eur(l.total)}`); }));
+    }));
   } catch (e) { msg($("#cmsg"), e.message); }
 }
 
@@ -654,8 +713,10 @@ async function artisanVentes() {
         <div class="kpi"><div class="l">CA total du magasin</div><div class="v">${eur(d.totalMagasin)}</div></div>
       </div>
       <div class="grid2">
-        <div class="card"><h2>Mes articles les plus vendus</h2><table><tr><th>Article</th><th class="num">Qté</th><th class="num">Ventes</th></tr>
-          ${d.topArticles.map((a) => `<tr><td>${esc(a.nom)} <span class="muted">${esc(a.ref)}</span></td><td class="num">${a.qte}</td><td class="num">${eur(a.ca)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Aucune vente.</td></tr>`}</table></div>
+        <div class="card"><h2>Mon top 10</h2><h3>En valeur</h3><table>
+          ${d.topArticles.map((a, i) => `<tr><td>${i + 1}. ${esc(a.nom)} <span class="muted">${esc(a.ref)}</span></td><td class="num">${eur(a.ca)}</td></tr>`).join("") || `<tr><td class="muted">Aucune vente.</td></tr>`}</table>
+          <h3>En quantité</h3><table>
+          ${d.topArticlesQte.map((a, i) => `<tr><td>${i + 1}. ${esc(a.nom)} <span class="muted">${esc(a.ref)}</span></td><td class="num">${a.qte}</td></tr>`).join("") || `<tr><td class="muted">Aucune vente.</td></tr>`}</table></div>
         <div class="card"><h2>Détail de mes ventes</h2><div style="max-height:400px;overflow:auto"><table><tr><th>Date</th><th>Article</th><th class="num">Qté</th><th class="num">Total</th></tr>
           ${d.lignes.map((l) => `<tr><td>${fdate(l.date)}</td><td>${esc(l.nom)} <span class="muted">${esc(l.ref)}</span></td><td class="num">${l.qte}</td><td class="num">${eur(l.total)}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucune vente sur la période.</td></tr>`}</table></div></div>
       </div>`;
@@ -711,10 +772,16 @@ async function adminDashboard() {
         <table><tr><th>#</th><th>Artisan</th><th class="num">Articles</th><th class="num">Ventes</th><th class="num">Part du CA</th><th class="num">Commission</th><th class="num">À reverser</th></tr>
         ${d.parArtisan.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.artisanNom)}</td><td class="num">${r.articles}</td><td class="num">${eur(r.ca)}</td><td class="num">${d.totalMagasin ? Math.round((r.ca / d.totalMagasin) * 100) : 0} %</td><td class="num">${eur(r.commission)}</td><td class="num"><b>${eur(r.net)}</b></td></tr>`).join("") || `<tr><td colspan="7" class="muted">Aucune vente sur la période.</td></tr>`}</table>
         <button class="btn small ghost" style="margin-top:10px" id="csv">Exporter le relevé en CSV</button></div>
-      <div class="grid2">
-        <div class="card"><h2>Top 10 articles en valeur</h2><table>${d.topArticlesValeur.map((a) => `<tr><td>${esc(a.nom)}<div class="muted">${esc(a.artisanNom)}</div></td><td class="num">${eur(a.ca)}</td></tr>`).join("") || "<tr><td class='muted'>Aucune vente.</td></tr>"}</table></div>
-        <div class="card"><h2>Top 10 articles en quantité</h2><table>${d.topArticlesQte.map((a) => `<tr><td>${esc(a.nom)}<div class="muted">${esc(a.artisanNom)}</div></td><td class="num">${a.qte}</td></tr>`).join("") || "<tr><td class='muted'>Aucune vente.</td></tr>"}</table></div>
-      </div>`;
+      <div class="card"><div class="row" style="align-items:flex-end"><h2 style="margin:0">Top 10 des articles</h2>
+        <div><label>Artisan</label><select id="topArt"><option value="">Tous les artisans</option>${d.parArtisan.map((r) => `<option value="${r.artisanId}">${esc(r.artisanNom)}</option>`).join("")}</select></div></div>
+        <div class="grid2" id="tops" style="margin-top:10px"></div></div>`;
+    const tops = () => {
+      const a = $("#topArt").value, list = d.tousArticles.filter((x) => !a || x.artisanId === a);
+      const val = [...list].sort((x, y) => y.ca - x.ca).slice(0, 10), qte = [...list].sort((x, y) => y.qte - x.qte).slice(0, 10);
+      $("#tops").innerHTML = `<div><h3>En valeur</h3><table>${val.map((x, i) => `<tr><td>${i + 1}. ${esc(x.nom)}<div class="muted">${esc(x.artisanNom)} · ${x.qte} vendus</div></td><td class="num">${eur(x.ca)}</td></tr>`).join("") || "<tr><td class='muted'>Aucune vente.</td></tr>"}</table></div>
+        <div><h3>En quantité</h3><table>${qte.map((x, i) => `<tr><td>${i + 1}. ${esc(x.nom)}<div class="muted">${esc(x.artisanNom)} · ${eur(x.ca)}</div></td><td class="num">${x.qte}</td></tr>`).join("") || "<tr><td class='muted'>Aucune vente.</td></tr>"}</table></div>`;
+    };
+    $("#topArt").onchange = tops; tops();
     $("#csv").onclick = () => {
       const rows = [["Artisan", "Articles", "Ventes", "Commission", "A reverser"], ...d.parArtisan.map((r) => [r.artisanNom, r.articles, (r.ca / 100).toFixed(2).replace(".", ","), (r.commission / 100).toFixed(2).replace(".", ","), (r.net / 100).toFixed(2).replace(".", ",")])];
       const blob = new Blob(["﻿" + rows.map((r) => r.join(";")).join("\n")], { type: "text/csv" });
@@ -725,25 +792,59 @@ async function adminDashboard() {
 }
 
 async function adminVentes() {
-  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div></div></div><div class="card" id="zl"></div><div class="card" id="vl"></div>`;
+  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div><div><label>Rechercher un ticket</label><input id="vq" placeholder="N°, article, artisan"></div></div></div>
+    <div class="card" id="vl"></div><div class="card" id="jl"></div><div class="card" id="zl"></div>`;
+  let V = [];
+  const renderV = () => {
+    const q = $("#vq").value.toLowerCase();
+    const list = V.filter((v) => !q || v.numero.toLowerCase().includes(q) || v.lignes.some((l) => l.nom.toLowerCase().includes(q) || l.artisanNom.toLowerCase().includes(q) || l.ref.toLowerCase().includes(q)));
+    $("#vl").innerHTML = `<h2>Historique des tickets</h2><table><tr><th>Date</th><th>Articles</th><th>Paiement</th><th class="num">Total</th><th></th></tr>
+      ${list.map((v) => { const i = V.indexOf(v); return `<tr><td>${fdate(v.date)}<div class="muted">${esc(v.numero)}</div></td><td>${v.lignes.map((l) => `${l.qte} × ${esc(l.nom)} <span class="muted">(${esc(l.artisanNom)})</span>`).join("<br>") || "<span class='muted'>—</span>"}
+        ${(v.historique || []).map((h) => `<div class="muted" style="font-size:12px">↳ ${fdate(h.date)} · ${esc(h.action)}${h.motif ? " · « " + esc(h.motif) + " »" : ""}${h.par ? " · " + esc(h.par) : ""}</div>`).join("")}</td>
+        <td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td>
+        <td class="num"><button class="btn small ghost" data-t="${i}">Ticket</button>${v.annulee ? "" : ` <button class="btn small ghost" data-m="${i}">Modifier</button> <button class="btn small danger" data-a="${i}">Annuler</button>`}</td></tr>`; }).join("") || `<tr><td colspan="5" class="muted">Aucune vente.</td></tr>`}</table>`;
+    $("#vl").querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => showTicket(V[b.dataset.t])));
+    $("#vl").querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => modifierTicket(V[b.dataset.m], load)));
+    $("#vl").querySelectorAll("[data-a]").forEach((b) => (b.onclick = async () => {
+      const v = V[b.dataset.a];
+      if (!confirm("Annuler ce ticket de " + eur(v.total) + " ? Le stock sera remis.")) return;
+      await api(`/ventes/${v.date.slice(0, 7)}/${v.id}/annuler`, { method: "POST", body: {} }); load();
+    }));
+  };
   const load = async () => {
-    const Z = await api("/z?mois=" + $("#mois").value);
+    const mois = $("#mois").value;
+    const [v, J, Z] = await Promise.all([api("/ventes?mois=" + mois), api("/journal?mois=" + mois), api("/z?mois=" + mois)]);
+    V = v; renderV();
+    $("#jl").innerHTML = `<h2>Annulations et justifications</h2><p class="muted">Lignes retirées, paniers vidés, tickets annulés ou modifiés, avec la justification donnée.</p>
+      <table><tr><th>Date</th><th>Action</th><th>Détail</th><th class="num">Montant</th><th>Par</th><th>Justification</th></tr>
+      ${J.map((j) => `<tr><td>${fdate(j.date)}</td><td>${esc(j.type)}</td><td>${esc(j.detail || (j.ticket ? "Ticket " + j.ticket : ""))}</td><td class="num">${eur(j.montant)}</td><td>${esc(j.par)}</td><td>${esc(j.motif) || '<span class="muted">—</span>'}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Rien ce mois-ci.</td></tr>`}</table>`;
     $("#zl").innerHTML = `<h2>Tickets Z (clôtures de caisse)</h2><table><tr><th>Jour</th><th>Clôturé par</th><th class="num">CA</th><th class="num">Écart</th><th class="num">À déposer</th><th></th></tr>
       ${Z.map((z, i) => `<tr><td>${fd(z.jour)}</td><td>${esc(z.vendeur)}</td><td class="num">${eur(z.ca)}</td><td class="num" style="color:${Math.abs(z.ecart) <= 100 ? "inherit" : "var(--rouge)"}">${eur(z.ecart)}</td><td class="num">${eur(z.aDeposer)}</td><td class="num"><button class="btn small ghost" data-z="${i}">Imprimer</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucune clôture ce mois-ci.</td></tr>`}</table>`;
     $("#zl").querySelectorAll("[data-z]").forEach((b) => (b.onclick = () => printZ(Z[b.dataset.z])));
-    const V = await api("/ventes?mois=" + $("#mois").value);
-    $("#vl").innerHTML = `<h2>Tickets</h2><table><tr><th>Date</th><th>N°</th><th>Articles</th><th>Paiement</th><th class="num">Total</th><th></th></tr>
-      ${V.map((v, i) => `<tr><td>${fdate(v.date)}</td><td>${esc(v.numero)}</td><td>${v.lignes.map((l) => `${l.qte} × ${esc(l.nom)} <span class="muted">(${esc(l.artisanNom)})</span>`).join("<br>")}</td>
-        <td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td>
-        <td class="num"><button class="btn small ghost" data-t="${i}">Ticket</button>${v.annulee ? "" : ` <button class="btn small danger" data-a="${i}">Annuler</button>`}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucune vente.</td></tr>`}</table>`;
-    $("#vl").querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => showTicket(V[b.dataset.t])));
-    $("#vl").querySelectorAll("[data-a]").forEach((b) => (b.onclick = async () => {
-      const v = V[b.dataset.a];
-      if (!confirm("Annuler cette vente de " + eur(v.total) + " ? Le stock sera remis.")) return;
-      await api(`/ventes/${v.date.slice(0, 7)}/${v.id}/annuler`, { method: "POST" }); load();
-    }));
   };
+  $("#vq").oninput = renderV;
   $("#mois").onchange = load; load();
+}
+function modifierTicket(v, done) {
+  const L = v.lignes.map((l) => ({ ref: l.ref, nom: l.nom, artisanNom: l.artisanNom, qte: l.qte, pu: (l.pu / 100).toFixed(2).replace(".", ",") }));
+  const draw = () => {
+    openModal(`<h2>Modifier le ticket ${esc(v.numero)}</h2>
+      <table>${L.map((l, i) => `<tr><td>${esc(l.nom)}<div class="muted">${esc(l.ref)} · ${esc(l.artisanNom)}</div></td>
+        <td style="width:70px"><input type="number" min="0" value="${l.qte}" data-q="${i}"></td><td style="width:90px"><input inputmode="decimal" value="${l.pu}" data-p="${i}"></td></tr>`).join("")}</table>
+      <p class="muted">Quantité 0 = ligne retirée. Le prix modifié ne change que ce ticket.</p>
+      <div class="row"><div><label>Ajouter un article (référence)</label><input id="mAdd" placeholder="ex. MD004"></div><div style="flex:0 0 auto"><button class="btn small ghost" id="mAddGo">Ajouter</button></div></div>
+      <label>Paiement</label><select id="mMode"><option ${v.paiement.mode === "CB" ? "selected" : ""}>CB</option><option ${v.paiement.mode === "Espèces" ? "selected" : ""}>Espèces</option></select>
+      <label>Note (facultatif)</label><input id="mMot">
+      <div id="mmsg"></div><div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="mGo">Enregistrer</button></div>`);
+    document.querySelectorAll("[data-q]").forEach((x) => (x.oninput = () => (L[x.dataset.q].qte = x.value)));
+    document.querySelectorAll("[data-p]").forEach((x) => (x.oninput = () => (L[x.dataset.p].pu = x.value)));
+    $("#mAddGo").onclick = () => { const r = $("#mAdd").value.trim().toUpperCase(); if (r) { L.push({ ref: r, nom: r, artisanNom: "", qte: 1, pu: "" }); draw(); } };
+    $("#mGo").onclick = async () => {
+      try { await api(`/ventes/${v.date.slice(0, 7)}/${v.id}`, { method: "PUT", body: { lignes: L, mode: $("#mMode").value, motif: $("#mMot").value } }); closeModal(); done(); }
+      catch (e) { msg($("#mmsg"), e.message); }
+    };
+  };
+  draw();
 }
 
 function finEngagement(ymd) { const d = new Date(ymd + "T12:00:00"); d.setMonth(d.getMonth() + 3); d.setDate(d.getDate() - 1); return d.toLocaleDateString("fr-FR"); }

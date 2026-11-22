@@ -115,7 +115,7 @@ function analyse(ventes) {
     (parJour[d] ||= { date: d, ca: 0, tickets: 0 }); parJour[d].ca += v.total; parJour[d].tickets++;
     parMode[v.paiement.mode] = (parMode[v.paiement.mode] || 0) + v.total;
     const h = parisHeure(v.date); (parHeure[h] ||= { heure: h, ca: 0, tickets: 0 }); parHeure[h].ca += v.total; parHeure[h].tickets++;
-    for (const l of v.lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, artisanNom: l.artisanNom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
+    for (const l of v.lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, artisanId: l.artisanId, artisanNom: l.artisanNom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
   }
   const arts = Object.values(parArticle);
   return {
@@ -126,6 +126,7 @@ function analyse(ventes) {
     parMode, parHeure: Object.values(parHeure).sort((a, b) => a.heure - b.heure),
     topArticlesValeur: [...arts].sort((a, b) => b.ca - a.ca).slice(0, 10),
     topArticlesQte: [...arts].sort((a, b) => b.qte - a.qte).slice(0, 10),
+    tousArticles: arts,
   };
 }
 
@@ -158,6 +159,43 @@ async function calculerZ(jour, comptageFermeture) {
     comptageFermeture, fondFermeture, attendu, ecart: fondFermeture - attendu,
     fondReserve: s.fondReserve, aDeposer: Math.max(0, fondFermeture - s.fondReserve),
   };
+}
+
+// ---- Annulations, modifications, journal ----
+async function majStock(ref, delta) {
+  const p = await getJSON(`products/${ref}`);
+  if (p && typeof p.stock === "number") { p.stock = Math.max(0, p.stock + delta); await setJSON(`products/${p.ref}`, p); }
+}
+async function journaliser(e) {
+  const date = new Date().toISOString();
+  const entry = { id: uid(), date, ...e };
+  await setJSON(`journal/${parisDate(date).slice(0, 7)}/${entry.id}`, entry);
+  return entry;
+}
+// Annule un ticket entier (ligne = null) ou une ligne (index) d'un ticket
+async function annulerVente(mois, id, { ligne = null, motif = "", par = "" }) {
+  const key = `sales/${mois}/${id}`;
+  const v = await getJSON(key);
+  if (!v) throw new Error("Vente introuvable");
+  if (v.annulee) return v;
+  v.historique ||= [];
+  if (ligne === null || ligne === undefined) {
+    v.annulee = true; v.annuleeLe = new Date().toISOString();
+    for (const l of v.lignes) await majStock(l.ref, l.qte);
+    v.historique.push({ date: v.annuleeLe, action: "Ticket annulé", motif, par });
+    await journaliser({ type: "Annulation de ticket", ticket: v.numero, montant: v.total, motif, par });
+  } else {
+    const l = v.lignes[ligne];
+    if (!l) throw new Error("Ligne introuvable");
+    v.lignes.splice(ligne, 1);
+    v.total -= l.total;
+    await majStock(l.ref, l.qte);
+    v.historique.push({ date: new Date().toISOString(), action: `Ligne annulée : ${l.qte} × ${l.nom} (${l.artisanNom})`, motif, par });
+    await journaliser({ type: "Annulation de ligne", ticket: v.numero, detail: `${l.qte} × ${l.nom} (${l.artisanNom})`, montant: l.total, motif, par });
+    if (!v.lignes.length) { v.annulee = true; v.annuleeLe = new Date().toISOString(); }
+  }
+  await setJSON(key, v);
+  return v;
 }
 
 function resumeParArtisan(ventes, taux) {
@@ -284,6 +322,28 @@ export default async (req) => {
         return json(await calculerZ(parisDate(new Date().toISOString()), body.comptage || {}));
       }
 
+      const gerant = auth(req)?.role === "admin";
+      const mCa = path.match(/^\/caisse\/ventes\/(\d{4}-\d{2})\/([a-f0-9-]+)\/annuler$/);
+      if (mCa && m === "POST") {
+        const motif = String(body.motif || "").trim(), par = String(body.par || "").trim();
+        if (!gerant && (!motif || !par)) return err("Justification et nom obligatoires pour annuler");
+        return json(await annulerVente(mCa[1], mCa[2], { ligne: body.ligne, motif, par: gerant ? "Gérance" : par }));
+      }
+      if (path === "/caisse/journal" && m === "POST") {
+        // suppression d'une ligne ou vidage du panier avant encaissement
+        const motif = String(body.motif || "").trim(), par = String(body.par || "").trim();
+        if (!gerant && (!motif || !par)) return err("Justification et nom obligatoires");
+        return json(await journaliser({ type: body.type === "panier" ? "Panier vidé avant encaissement" : "Ligne supprimée avant encaissement", detail: String(body.detail || ""), montant: Math.round(Number(body.montant) || 0), motif, par: gerant ? "Gérance" : par, poste: dev.nom }));
+      }
+      if (path === "/caisse/attente" && m === "GET") return json((await listJSON("attente/")).sort((a, b) => a.date.localeCompare(b.date)));
+      if (path === "/caisse/attente" && m === "POST") {
+        const t = { id: uid(), date: new Date().toISOString(), nom: String(body.nom || "").trim(), lignes: body.lignes || [], poste: dev.nom };
+        await setJSON(`attente/${t.id}`, t);
+        return json(t);
+      }
+      const mAt = path.match(/^\/caisse\/attente\/([a-f0-9-]+)$/);
+      if (mAt && m === "DELETE") { await store().delete(`attente/${mAt[1]}`); return json({ ok: true }); }
+
       if (path === "/caisse/jour" && m === "GET") {
         const jour = url.searchParams.get("date") || parisDate(new Date().toISOString());
         const ventes = (await ventesEntre(jour, jour)).filter((v) => parisDate(v.date) === jour);
@@ -387,7 +447,7 @@ export default async (req) => {
       for (const v of ventes) for (const l of v.lignes) if (l.artisanId === user.id) lignes.push({ date: v.date, ref: l.ref, nom: l.nom, qte: l.qte, pu: l.pu, total: l.total });
       const parArticle = {};
       for (const l of lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
-      return json({ du, au, commissionTaux: settings.commission, totalMagasin: res.total, moi: mine, lignes, topArticles: Object.values(parArticle).sort((a, b) => b.ca - a.ca).slice(0, 10) });
+      return json({ du, au, commissionTaux: settings.commission, totalMagasin: res.total, moi: mine, lignes, topArticles: Object.values(parArticle).sort((a, b) => b.ca - a.ca).slice(0, 10), topArticlesQte: Object.values(parArticle).sort((a, b) => b.qte - a.qte).slice(0, 10) });
     }
 
     // ---------- Administration (gérance uniquement) ----------
@@ -429,17 +489,44 @@ export default async (req) => {
     }
     const mVente = path.match(/^\/ventes\/(\d{4}-\d{2})\/([a-f0-9-]+)\/annuler$/);
     if (mVente && m === "POST") {
-      const key = `sales/${mVente[1]}/${mVente[2]}`;
+      return json(await annulerVente(mVente[1], mVente[2], { ligne: body.ligne, motif: String(body.motif || "").trim(), par: "Gérance" }));
+    }
+    const mMod = path.match(/^\/ventes\/(\d{4}-\d{2})\/([a-f0-9-]+)$/);
+    if (mMod && m === "PUT") {
+      const key = `sales/${mMod[1]}/${mMod[2]}`;
       const v = await getJSON(key);
       if (!v) return err("Vente introuvable", 404);
-      if (v.annulee) return json(v);
-      v.annulee = true; v.annuleeLe = new Date().toISOString();
-      await setJSON(key, v);
-      for (const l of v.lignes) {
-        const p = await getJSON(`products/${l.ref}`);
-        if (p && typeof p.stock === "number") { p.stock += l.qte; await setJSON(`products/${p.ref}`, p); }
+      if (v.annulee) return err("Ce ticket est annulé");
+      const avant = { lignes: v.lignes, total: v.total, paiement: v.paiement };
+      const arts = Object.fromEntries((await listJSON("artisans/")).map((a) => [a.id, a]));
+      const nouvelles = [];
+      for (const l of body.lignes || []) {
+        const qte = Math.max(0, parseInt(l.qte, 10) || 0);
+        if (!qte) continue;
+        const exist = v.lignes.find((x) => x.ref === l.ref);
+        const p = exist ? null : await getJSON(`products/${l.ref}`);
+        if (!exist && !p) return err(`Article inconnu : ${l.ref}`);
+        const pu = l.pu != null && l.pu !== "" ? toCents(l.pu) : exist ? exist.pu : p.prix;
+        const base = exist || { ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom: arts[p.artisanId]?.nom || "" };
+        nouvelles.push({ ...base, qte, pu, total: pu * qte });
       }
+      if (!nouvelles.length) return err("Le ticket doit garder au moins un article (sinon, annulez-le)");
+      // stock : différence entre avant et après
+      const q = (arr) => arr.reduce((m2, l) => ((m2[l.ref] = (m2[l.ref] || 0) + l.qte), m2), {});
+      const qa = q(v.lignes), qn = q(nouvelles);
+      for (const ref of new Set([...Object.keys(qa), ...Object.keys(qn)])) { const d = (qa[ref] || 0) - (qn[ref] || 0); if (d) await majStock(ref, d); }
+      v.lignes = nouvelles;
+      v.total = nouvelles.reduce((t, l) => t + l.total, 0);
+      if (body.mode) v.paiement = { ...v.paiement, mode: body.mode };
+      v.historique ||= [];
+      v.historique.push({ date: new Date().toISOString(), action: `Ticket modifié (${(avant.total / 100).toFixed(2)} € → ${(v.total / 100).toFixed(2)} €)`, motif: String(body.motif || "").trim(), par: "Gérance", avant });
+      await setJSON(key, v);
+      await journaliser({ type: "Modification de ticket", ticket: v.numero, montant: v.total - avant.total, motif: String(body.motif || "").trim(), par: "Gérance" });
       return json(v);
+    }
+    if (path === "/journal" && m === "GET") {
+      const mois = url.searchParams.get("mois") || new Date().toISOString().slice(0, 7);
+      return json((await listJSON(`journal/${mois}/`)).sort((a, b) => b.date.localeCompare(a.date)));
     }
 
     if (path === "/z" && m === "GET") {
