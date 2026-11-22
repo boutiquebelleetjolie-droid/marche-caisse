@@ -146,7 +146,7 @@ async function start() {
   $("#who").textContent = S.nom ? S.nom : "";
   $("#btnLogout").classList.toggle("hidden", !S.token);
   if (!S.token) return showLogin();
-  route(S.role === "admin" ? "dashboard" : "catalogue");
+  route(S.role === "admin" ? (S.cle ? "caisse" : "dashboard") : "catalogue");
 }
 
 function showLogin() {
@@ -175,7 +175,7 @@ function showLogin() {
 }
 
 function route(k) {
-  const navA = [["dashboard", "Tableau de bord"], ["caisse", "Caisse"], ["ventes", "Ventes"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
+  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
   const navR = [["catalogue", "Mon catalogue"], ["mesventes", "Mes ventes"], ["compte", "Mon compte"]];
   if (S.role === "admin") {
     setNav(navA, k);
@@ -739,7 +739,8 @@ function compteView() {
 // ================== ESPACE GÉRANCE ==================
 async function adminDashboard() {
   const pp = periodPicker((du, au) => load(du, au));
-  app.innerHTML = `${pp.html}<div id="dres"><p class="muted">Chargement…</p></div>`;
+  app.innerHTML = `${pp.html}<div id="dres"><p class="muted">Chargement…</p></div><h2 style="margin:22px 0 10px">Tickets, annulations et clôtures</h2><div id="ventesZone"></div>`;
+  adminVentes($("#ventesZone"));
   async function load(du, au) {
     const d = await api(`/stats?du=${du}&au=${au}`);
     const comm = d.parArtisan.reduce((s, r) => s + r.commission, 0);
@@ -791,8 +792,8 @@ async function adminDashboard() {
   pp.bind();
 }
 
-async function adminVentes() {
-  app.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div><div><label>Rechercher un ticket</label><input id="vq" placeholder="N°, article, artisan"></div></div></div>
+async function adminVentes(cible = app) {
+  cible.innerHTML = `<div class="card"><div class="row"><div><label>Mois</label><input type="month" id="mois" value="${thisMonth()}"></div><div><label>Rechercher un ticket</label><input id="vq" placeholder="N°, article, artisan"></div></div></div>
     <div class="card" id="vl"></div><div class="card" id="jl"></div><div class="card" id="zl"></div>`;
   let V = [];
   const renderV = () => {
