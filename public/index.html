@@ -160,7 +160,7 @@ function showLogin() {
     } catch (e) { msg($("#lmsg"), e.message); }
   };
   $("#lgo").onclick = go;
-  $("#lpw").onkeydown = (e) => e.key === "Enter" && go();
+  $("#lpw").onkeydown = (e) => { if (e.key === "Enter") go(); };
   if ($("#opencaisse")) $("#opencaisse").onclick = () => showCaisse();
 }
 
