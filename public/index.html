@@ -192,6 +192,7 @@ async function showCaisse() {
         <h2 style="margin:0">Caisse</h2>
         <div style="flex:0 0 auto" class="row">
           <button class="btn small ghost" id="cJour">Ventes du jour</button>
+          <button class="btn small osb" id="cEtiq">Étiquettes</button>
           <button class="btn small ghost" id="cReload">Actualiser les articles</button>
           ${!S.token ? `<button class="btn small ghost" id="cQuit">Fermer la caisse</button>` : ""}
         </div>
@@ -214,6 +215,7 @@ async function showCaisse() {
   </div>`;
   $("#cReload").onclick = loadProds;
   $("#cJour").onclick = venteDuJour;
+  $("#cEtiq").onclick = () => printLabels(PRODS);
   if ($("#cQuit")) $("#cQuit").onclick = showLogin;
   $("#cClear").onclick = () => { CART = []; renderCart(); };
   document.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => payer(b.dataset.pay)));
@@ -376,27 +378,67 @@ async function artisanCatalogue() {
       msg($("#fmsg"), (editing ? "Article modifié : " : "Article créé avec la référence ") + p.ref, "ok"); reset(); load();
     } catch (e) { msg($("#fmsg"), e.message); }
   };
-  $("#labelsBtn").onclick = () => printLabels(PR.filter((p) => p.actif !== false));
+  $("#labelsBtn").onclick = () => printLabels(PR.filter((p) => p.actif !== false).map((p) => ({ ...p, artisanNom: S.nom })));
   load();
 }
 
+// Étiquettes : même format que Belle&Jolie — planche A4 de 65 étiquettes (5 colonnes × 13 lignes, 38 × 21,2 mm)
+function barcodeSVG(code) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  try { JsBarcode(svg, code, { format: "CODE128", displayValue: false, margin: 0, height: 40, width: 2 }); } catch {}
+  svg.setAttribute("preserveAspectRatio", "none");
+  return svg.outerHTML;
+}
 function printLabels(list) {
-  openModal(`<h2>Étiquettes</h2><p class="muted">Indiquez le nombre d'étiquettes par article, puis imprimez.</p>
-    <table>${list.map((p, i) => `<tr><td><b>${esc(p.ref)}</b> ${esc(p.nom)}</td><td style="width:80px"><input type="number" min="0" value="${typeof p.stock === "number" ? p.stock : 1}" data-n="${i}"></td></tr>`).join("")}</table>
-    <div class="row" style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">Fermer</button><button class="btn" id="lgo2">Préparer l'impression</button></div>
-    <div id="labels" style="margin-top:14px"></div>`);
-  $("#lgo2").onclick = () => {
-    const zone = $("#labels"); zone.innerHTML = "";
-    document.querySelectorAll("[data-n]").forEach((inp) => {
-      const p = list[inp.dataset.n];
-      for (let k = 0; k < (+inp.value || 0); k++) {
-        const d = document.createElement("div"); d.className = "label";
-        d.innerHTML = `<div>${esc(S.nom || "")}</div><div><b>${esc(p.nom)}</b></div><svg></svg><div class="p">${eur(p.prix)}</div>`;
-        zone.appendChild(d);
-        try { JsBarcode(d.querySelector("svg"), p.ref, { format: "CODE128", height: 40, width: 1.6, fontSize: 12, margin: 2 }); } catch {}
-      }
-    });
-    $("#modal").classList.add("print-zone"); setTimeout(() => { window.print(); $("#modal").classList.remove("print-zone"); }, 300);
+  // list : articles avec p.artisanNom
+  const artisans = [...new Set(list.map((p) => p.artisanNom).filter(Boolean))].sort();
+  openModal(`<h2>Étiquettes</h2>
+    <p class="muted">Planche A4 de 65 étiquettes (38 × 21,2 mm), même format que Belle&amp;Jolie. Indiquez le nombre d'étiquettes par article.</p>
+    ${artisans.length > 1 ? `<label>Artisan</label><select id="eArt"><option value="">Tous les artisans</option>${artisans.map((a) => `<option>${esc(a)}</option>`).join("")}</select>` : ""}
+    <label>Rechercher</label><input id="eQ" placeholder="Article ou référence">
+    <div id="eList" style="max-height:40vh;overflow:auto;margin-top:8px"></div>
+    <label>Commencer à la position n° (1 à 65, pour réutiliser une planche entamée)</label><input id="ePos" type="number" min="1" max="65" value="1">
+    <div id="emsg"></div>
+    <div class="row" style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">Fermer</button><button class="btn" id="eGo">Imprimer la planche</button></div>`);
+  const qty = {};
+  const render = () => {
+    const a = $("#eArt")?.value || "", q = $("#eQ").value.toLowerCase();
+    const f = list.filter((p) => (!a || p.artisanNom === a) && (!q || p.nom.toLowerCase().includes(q) || p.ref.toLowerCase().includes(q)));
+    $("#eList").innerHTML = `<table>${f.map((p) => `<tr><td><b>${esc(p.ref)}</b> ${esc(p.nom)}<div class="muted">${esc(p.artisanNom || "")} · ${eur(p.prix)}</div></td><td style="width:80px"><input type="number" min="0" value="${qty[p.ref] || 0}" data-ref="${esc(p.ref)}"></td></tr>`).join("") || "<tr><td class='muted'>Aucun article.</td></tr>"}</table>`;
+    $("#eList").querySelectorAll("[data-ref]").forEach((i) => (i.oninput = () => (qty[i.dataset.ref] = Math.max(0, parseInt(i.value, 10) || 0))));
+  };
+  if ($("#eArt")) $("#eArt").onchange = render;
+  $("#eQ").oninput = render; render();
+  $("#eGo").onclick = () => {
+    const pos = Math.min(65, Math.max(1, parseInt($("#ePos").value, 10) || 1));
+    let cells = Array.from({ length: pos - 1 }, () => `<div class="etiq vide"></div>`);
+    for (const p of list) for (let k = 0; k < (qty[p.ref] || 0); k++) cells.push(`<div class="etiq">
+        <div class="etiq-name">${esc(p.nom)}</div>
+        <div class="etiq-ref">${esc(p.artisanNom || "")}</div>
+        <div class="etiq-bc">${barcodeSVG(p.ref)}</div>
+        <div class="etiq-bc-num">${esc(p.ref)}</div>
+        <div class="etiq-prix">${eur(p.prix)}</div></div>`);
+    if (cells.length === pos - 1) return msg($("#emsg"), "Indiquez au moins une étiquette.");
+    const pages = [];
+    for (let i = 0; i < cells.length; i += 65) pages.push(`<div class="page${i ? " page-suivante" : ""}">${cells.slice(i, i + 65).join("")}</div>`);
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Étiquettes</title><style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      html,body{font-family:Arial,sans-serif}
+      .no-print{text-align:center;padding:10px;background:#4f6d52;color:#fff;font-size:14px;cursor:pointer;margin-bottom:5mm}
+      .page{display:grid;grid-template-columns:repeat(5,38mm);grid-auto-rows:21.2mm;gap:0;margin:10mm;width:190mm;overflow:hidden}
+      .etiq{width:38mm;height:21.2mm;border:0.2mm solid #ccc;padding:0.4mm 0.6mm;display:flex;flex-direction:column;align-items:center;justify-content:space-between;text-align:center;overflow:hidden;break-inside:avoid}
+      .etiq.vide{border-color:transparent}
+      .etiq-name{font-weight:700;font-size:6.5pt;line-height:1.1;width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+      .etiq-ref{font-size:4.5pt;color:#444;width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;line-height:1.1}
+      .etiq-bc{width:33mm;height:6mm;overflow:hidden}
+      .etiq-bc svg{width:33mm;height:6mm;display:block}
+      .etiq-bc-num{font-family:monospace;font-size:4pt;color:#555;line-height:1}
+      .etiq-prix{font-size:13pt;font-weight:700;line-height:1}
+      .page-suivante{page-break-before:always}
+      @media print{.no-print{display:none}@page{margin:0;size:210mm 297mm}}
+    </style></head><body><div class="no-print" onclick="window.print()">Cliquer ici pour imprimer — ou Ctrl+P</div>${pages.join("")}</body></html>`;
+    const w = window.open(URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" })), "_blank");
+    if (!w) msg($("#emsg"), "Autorisez les fenêtres pop-up pour ce site, puis recommencez.");
   };
 }
 
@@ -507,7 +549,7 @@ async function adminArtisans() {
 }
 
 async function adminProduits() {
-  app.innerHTML = `<div class="card"><h2>Catalogue complet</h2><input id="q" placeholder="Rechercher un article, une référence, un artisan"><div id="pl" style="margin-top:10px"></div></div>`;
+  app.innerHTML = `<div class="card"><div class="row" style="align-items:center"><h2 style="margin:0">Catalogue complet</h2><button class="btn small osb" id="admEtiq" style="flex:0 0 auto">Imprimer des étiquettes</button></div><input id="q" style="margin-top:10px" placeholder="Rechercher un article, une référence, un artisan"><div id="pl" style="margin-top:10px"></div></div>`;
   const [P, A] = await Promise.all([api("/produits"), api("/artisans")]);
   const noms = Object.fromEntries(A.map((a) => [a.id, a.nom]));
   const render = () => {
@@ -517,6 +559,7 @@ async function adminProduits() {
       ${list.map((p) => `<tr><td><b>${esc(p.ref)}</b></td><td>${esc(p.nom)}${p.actif === false ? ' <span class="tag off">retiré</span>' : ""}</td><td>${esc(noms[p.artisanId])}</td><td class="num">${eur(p.prix)}</td><td class="num">${p.stock ?? "–"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Aucun article.</td></tr>`}</table>`;
   };
   $("#q").oninput = render; render();
+  $("#admEtiq").onclick = () => printLabels(P.filter((p) => p.actif !== false).map((p) => ({ ...p, artisanNom: noms[p.artisanId] })));
 }
 
 async function adminParametres() {
