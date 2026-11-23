@@ -760,7 +760,7 @@ async function planningView(cible, modeCaisse = false) {
   let mois = thisMonth();
   const base = modeCaisse ? "/caisse/planning" : "/planning";
   const draw = async () => {
-    const jours = await api(`${base}?mois=${mois}`);
+    const [jours, besoins] = await Promise.all([api(`${base}?mois=${mois}`), api(`${base}/besoins?mois=${mois}`).catch(() => [])]);
     const [y, m] = mois.split("-").map(Number);
     const auj = ymd(new Date());
     const compte = {};
@@ -781,8 +781,10 @@ async function planningView(cible, modeCaisse = false) {
             ? (c.inscrits.some((x) => x.initiales === moi) ? "" : `<button class="btn small" data-prendre="${j.date}|${c.id}">Je prends</button>`)
             : `<input data-ini="${j.date}|${c.id}" placeholder="Initiales" maxlength="4" style="width:90px;padding:4px 8px;text-transform:uppercase">`).join("") : ""}
         </div></td>`).join("")}</tr>`).join("")}</table></div>
-      ${admin ? `<div class="card"><h2>Permanences du mois par artisan</h2><table>${Object.entries(compte).sort().map(([n, k]) => `<tr><td>${esc(n)}</td><td class="num">${k}</td></tr>`).join("") || "<tr><td class='muted'>Aucune inscription.</td></tr>"}</table>
-        <p class="muted">« Non venu » fait passer l'artisan à la formule sans participation à l'accueil (loyer + supplément) à partir du mois suivant, comme prévu au contrat.</p></div>` : ""}`;
+      <div class="card"><h2>Permanences à assurer ce mois-ci</h2><p class="muted">1 permanence par mois pour un stand de 1 m, 2 pour un stand de 2 m (formule avec participation à l'accueil).</p>
+        <table><tr><th>Artisan</th><th>Stand</th><th class="num">Prises</th><th class="num">À assurer</th><th></th></tr>${besoins.filter((b) => b.requis || b.pris).filter((b) => admin || !moi || b.initiales === moi || true).map((b) => `<tr><td><b>${esc(b.initiales)}</b> ${esc(b.nom)}</td><td>${esc(b.stand || "")}</td><td class="num">${b.pris}</td><td class="num">${b.requis}</td>
+          <td>${b.pris >= b.requis ? '<span class="tag">complet</span>' : `<span class="tag off">${b.requis - b.pris} à prendre</span>`}</td></tr>`).join("") || "<tr><td class='muted'>Aucun artisan.</td></tr>"}</table>
+      ${admin ? `<p class="muted">« Non venu » fait passer l'artisan à la formule sans participation à l'accueil (loyer + supplément) à partir du mois suivant, comme prévu au contrat.</p>` : ""}</div>`;
     $("#plPrev").onclick = () => { const d = new Date(y, m - 2, 1); mois = ymd(d).slice(0, 7); draw(); };
     $("#plNext").onclick = () => { const d = new Date(y, m, 1); mois = ymd(d).slice(0, 7); draw(); };
     const err = (e) => msg($("#plmsg"), e.message);
@@ -1252,9 +1254,9 @@ async function adminSuivi() {
       const a = L.find((x) => x.artisanId === b.dataset.lp);
       const du = a.couvertJusquau ? ymd(new Date(new Date(a.couvertJusquau + "T12:00:00").getTime() + 864e5)) : a.dateDebut || auj;
       const au = (() => { const d = new Date(du + "T12:00:00"); d.setMonth(d.getMonth() + 3); d.setDate(d.getDate() - 1); return ymd(d); })();
-      openModal(`<h2>Loyer – ${esc(a.nom)}</h2><div class="row"><div><label>Montant (€)</label><input id="lMt" inputmode="decimal" value="${((a.loyer * 3) / 100).toFixed(2).replace(".", ",")}"></div><div><label>Mode</label><select id="lMo"><option>Virement</option><option>Carte</option><option>Espèces</option><option>Chèque</option></select></div></div>
+      openModal(`<h2>Loyer – ${esc(a.nom)}</h2><div class="row"><div><label>Montant (€)</label><input id="lMt" inputmode="decimal" value="${((a.loyer * 3 + (a.paiements.length ? 0 : S.settings.fraisInstallation ?? 5000)) / 100).toFixed(2).replace(".", ",")}"></div><div><label>Mode</label><select id="lMo"><option>Virement</option><option>Carte</option><option>Espèces</option><option>Chèque</option></select></div></div>
         <div class="row"><div><label>Du</label><input type="date" id="lDu" value="${du}"></div><div><label>Au</label><input type="date" id="lAu" value="${au}"></div></div>
-        <label>Note</label><input id="lNo"><div id="lmsg"></div>
+        <label>Note</label><input id="lNo" value="${a.paiements.length ? "" : "dont " + eur(S.settings.fraisInstallation ?? 5000) + " de frais d'installation"}"><div id="lmsg"></div>
         <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="lGo">Enregistrer</button></div>`);
       $("#lGo").onclick = async () => { try { await api("/loyers", { method: "POST", body: { artisanId: a.artisanId, montant: $("#lMt").value, mode: $("#lMo").value, du: $("#lDu").value, au: $("#lAu").value, note: $("#lNo").value } }); closeModal(); loyers(); } catch (e) { msg($("#lmsg"), e.message); } };
     }));
@@ -1317,6 +1319,7 @@ async function adminParametres() {
       <label>Mention TVA sur les factures</label><input id="sTva" value="${esc(s.mentionTVA || "")}">
       <div class="row"><div><label>Loyer stand 1 m (€)</label><input id="sP1" inputmode="decimal" value="${(s.prixStand1 / 100).toFixed(2).replace(".", ",")}"></div><div><label>Loyer stand 2 m (€)</label><input id="sP2" inputmode="decimal" value="${(s.prixStand2 / 100).toFixed(2).replace(".", ",")}"></div></div>
       <label>Supplément mensuel formule sans participation à l'accueil (€)</label><input id="sPen" inputmode="decimal" value="${((s.supplementSansAccueil ?? 5000) / 100).toFixed(2).replace(".", ",")}">
+      <label>Frais d'installation, payés une fois à l'arrivée (€)</label><input id="sInst" inputmode="decimal" value="${((s.fraisInstallation ?? 5000) / 100).toFixed(2).replace(".", ",")}">
       <label>Fond de caisse laissé dans le tiroir (€)</label><input id="sFond" inputmode="decimal" value="${(s.fondReserve / 100).toFixed(2).replace(".", ",")}">
       <div id="smsg"></div><button class="btn" id="sGo" style="margin-top:10px">Enregistrer</button></div>
     <div class="card"><h2>Poste caisse</h2>
@@ -1328,7 +1331,7 @@ async function adminParametres() {
     </div>
     <div class="card"><h2>Mot de passe gérance</h2><label>Nouveau mot de passe</label><input type="password" id="apw"><div id="apm"></div><button class="btn" id="apgo" style="margin-top:10px">Changer</button></div></div>`;
   $("#sGo").onclick = async () => {
-    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, supplementSansAccueil: $("#sPen").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
+    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, supplementSansAccueil: $("#sPen").value, fraisInstallation: $("#sInst").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
     catch (e) { msg($("#smsg"), e.message); }
   };
   if ($("#act")) $("#act").onclick = async () => {

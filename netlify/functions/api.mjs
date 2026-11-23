@@ -80,7 +80,7 @@ async function getSettings() {
     mentionTVA: "TVA non applicable, art. 293 B du CGI",
     prixStand1: 10000,
     prixStand2: 18000,
-    supplementSansAccueil: 5000,
+    supplementSansAccueil: 5000, fraisInstallation: 5000,
     ...((await getJSON("settings")) || {}),
   };
 }
@@ -250,6 +250,13 @@ async function planningMois(mois) {
     jours.push({ date: ymd, creneaux: cr.map((c) => ({ ...c, inscrits: inscrits.filter((x) => x.date === ymd && x.creneau === c.id) })) });
   }
   return jours;
+}
+// Nombre de permanences à assurer dans le mois : 1 pour un stand de 1 m, 2 pour un stand de 2 m, 0 en formule sans accueil
+const permanencesRequises = (a, mois) => (a.formule === "sans accueil" && (!a.formuleDepuis || `${mois}-01` >= a.formuleDepuis) ? 0 : a.stand === "2 m" ? 2 : 1);
+async function besoinsPlanning(mois) {
+  const [arts, ins] = await Promise.all([listJSON("artisans/"), listJSON(`planning/${mois}`)]);
+  return arts.filter((a) => a.actif).map((a) => ({ initiales: a.initiales, nom: a.nom, stand: a.stand, requis: permanencesRequises(a, mois), pris: ins.filter((x) => x.artisanId === a.id).length }))
+    .sort((x, y) => (y.requis - y.pris) - (x.requis - x.pris) || x.nom.localeCompare(y.nom, "fr"));
 }
 async function inscrire(date, creneau, a) {
   const c = creneauxDuJour(date).find((x) => x.id === creneau);
@@ -612,6 +619,7 @@ export default async (req) => {
         if (!gerant && (!motif || !par)) return err("Justification et nom obligatoires");
         return json(await journaliser({ type: body.type === "panier" ? "Panier vidé avant encaissement" : "Ligne supprimée avant encaissement", detail: String(body.detail || ""), montant: Math.round(Number(body.montant) || 0), motif, par: gerant ? "Gérance" : par, poste: dev.nom }));
       }
+      if (path === "/caisse/planning/besoins" && m === "GET") return json(await besoinsPlanning(url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7)));
       if (path === "/caisse/planning" && m === "GET") return json(await planningMois(url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7)));
       if (path === "/caisse/planning" && m === "POST") {
         const a = await artisanParInitiales(body.initiales);
@@ -713,6 +721,7 @@ export default async (req) => {
     }
 
     // --- Planning des permanences ---
+    if (path === "/planning/besoins" && m === "GET") return json(await besoinsPlanning(url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7)));
     if (path === "/planning" && m === "GET") return json(await planningMois(url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7)));
     if (path === "/planning" && m === "POST") {
       const a = isAdmin ? await artisanParInitiales(body.initiales) : await getJSON(`artisans/${user.id}`);
@@ -965,7 +974,7 @@ export default async (req) => {
       if (body.commission != null) s.commission = Math.min(100, Math.max(0, Number(body.commission) || 0));
       if (body.fondReserve != null && body.fondReserve !== "") s.fondReserve = Math.max(0, toCents(body.fondReserve));
       for (const k of ["siret", "mentionTVA"]) if (body[k] != null) s[k] = String(body[k]).trim();
-      for (const k of ["prixStand1", "prixStand2", "supplementSansAccueil"]) if (body[k] != null && body[k] !== "") s[k] = Math.max(0, toCents(body[k]));
+      for (const k of ["prixStand1", "prixStand2", "supplementSansAccueil", "fraisInstallation"]) if (body[k] != null && body[k] !== "") s[k] = Math.max(0, toCents(body[k]));
       await setJSON("settings", s);
       return json(s);
     }
