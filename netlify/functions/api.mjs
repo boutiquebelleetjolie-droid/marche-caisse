@@ -352,6 +352,21 @@ async function releve(mois, artisanId) {
   };
 }
 
+// ---- Relevé mensuel d'un fournisseur en dépôt : ce qui a été vendu, au prix d'achat convenu ----
+async function releveFournisseur(f, mois, s) {
+  const [y, m] = mois.split("-").map(Number);
+  const fin = `${mois}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
+  const ventes = (await ventesEntre(`${mois}-01`, fin)).filter((v) => !v.annulee);
+  const lignes = [];
+  for (const v of ventes) for (const l of v.lignes) if (l.fournisseurId === f.id) lignes.push({ date: v.date, ticket: v.numero, ref: l.ref, nom: l.nom, qte: l.qte, prixAchat: l.prixAchat, totalAchat: l.qte * l.prixAchat, totalVente: l.total });
+  lignes.sort((a, b) => a.date.localeCompare(b.date));
+  const parArticle = {};
+  for (const l of lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, prixAchat: l.prixAchat, qte: 0, totalAchat: 0, totalVente: 0 }); a.qte += l.qte; a.totalAchat += l.totalAchat; a.totalVente += l.totalVente; }
+  const stock = (await listJSON("products/")).filter((p) => p.fournisseurId === f.id && p.actif !== false).map((p) => ({ ref: p.ref, nom: p.nom, stock: p.stock, prixAchat: p.prixAchat }));
+  return { mois, du: `${mois}-01`, au: fin, fournisseur: f, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret }, lignes, articles: Object.values(parArticle),
+    totalAchat: lignes.reduce((t, l) => t + l.totalAchat, 0), totalVente: lignes.reduce((t, l) => t + l.totalVente, 0), stock, paiement: await getJSON(`achatsF/${mois}/${f.id}`) };
+}
+
 // ---- Comptabilité de la boutique (ses propres recettes, pas les ventes des artisans) ----
 function moisEntre(du, au) { const out = []; let m = du; while (m <= au) { out.push(m); const [y, mo] = m.split("-").map(Number); m = mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, "0")}`; } return out; }
 async function comptabilite(du, au, s) {
@@ -363,8 +378,19 @@ async function comptabilite(du, au, s) {
     const [y, m] = mois.split("-").map(Number);
     const fin = `${mois}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
     const ventes = (await ventesEntre(`${mois}-01`, fin)).filter((v) => !v.annulee);
-    const caArt = {}; let sacs = 0;
-    for (const v of ventes) for (const l of v.lignes) { if (l.artisanId === "boutique") sacs += l.total; else if (!estCadeau(l)) caArt[l.artisanId] = (caArt[l.artisanId] || 0) + l.total; }
+    const caArt = {}; let sacs = 0; const march = {}, achats = {};
+    for (const v of ventes) for (const l of v.lignes) {
+      if (l.fournisseurId) { const t = l.tvaVente ?? 20; (march[t] ||= 0); march[t] += l.total; achats[l.fournisseurId] = (achats[l.fournisseurId] || 0) + l.qte * (l.prixAchat || 0); }
+      else if (l.artisanId === "boutique") sacs += l.total; else if (!estCadeau(l)) caArt[l.artisanId] = (caArt[l.artisanId] || 0) + l.total;
+    }
+    for (const [t, ttc] of Object.entries(march)) if (ttc) ajouter("recette", fin, "Ventes de marchandises", `Ventes produits fournisseurs (TVA ${t} %) – ${mois}`, "Clients", ttc, T.assujetti ? tvaDans(ttc, Number(t)) : 0);
+    for (const [fid, ht] of Object.entries(achats)) {
+      if (!ht) continue;
+      const fa = await getJSON(`achatsF/${mois}/${fid}`), fo = await getJSON(`fournisseurs/${fid}`);
+      // montant de la facture reçue s'il est saisi, sinon le relevé des ventes au prix d'achat
+      const ttcF = fa?.montant || ht, tvaF = fa ? fa.tva : 0;
+      ajouter("depense", fin, "Achats de marchandises", `Achats ${fo?.nom || ""} – ${mois}${fa?.facture ? " – facture " + fa.facture : " (selon relevé)"}`, fo?.nom || "", ttcF, T.assujetti ? tvaF : 0);
+    }
     for (const a of arts) {
       const ca = caArt[a.id] || 0, tp = Number(a.tvaProduits) || 0;
       const base = tp ? Math.round((ca * 100) / (100 + tp)) : ca;
@@ -526,7 +552,7 @@ export default async (req) => {
 
       if (path === "/caisse/produits" && m === "GET") {
         const [prods, arts] = await Promise.all([listJSON("products/"), listJSON("artisans/")]);
-        const noms = Object.fromEntries(arts.map((a) => [a.id, a.nom]));
+        const noms = Object.fromEntries(arts.map((a) => [a.id, a.nom])); noms.boutique = "Boutique";
         return json([{ ...SAC, artisanNom: "Boutique" }, ...prods.filter((p) => p.actif !== false).map((p) => ({ ...p, artisanNom: noms[p.artisanId] || "" }))]);
       }
 
@@ -563,7 +589,8 @@ export default async (req) => {
           const artisanNom = p.artisanId === "boutique" ? "Boutique" : arts[p.artisanId]?.nom || "";
           const brut = p.prix * qte;
           const remise = calcRemise(l.remise, brut);
-          lignes.push({ ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom, qte, pu: p.prix, remise: remise ? { ...l.remise, montant: remise } : null, total: brut - remise });
+          lignes.push({ ref: p.ref, nom: p.nom, artisanId: p.artisanId, artisanNom, qte, pu: p.prix, remise: remise ? { ...l.remise, montant: remise } : null, total: brut - remise,
+            ...(p.fournisseurId ? { fournisseurId: p.fournisseurId, prixAchat: p.prixAchat || 0, tvaVente: p.tvaVente ?? 20 } : {}) });
         }
         // remise sur tout le ticket : répartie au prorata sur les lignes
         let remiseTicket = null;
@@ -629,10 +656,11 @@ export default async (req) => {
         for (const r of choix) {
           const l = o.lignes[r.index];
           if (!l) return err("Ligne introuvable");
-          if (estCadeau(l) || l.artisanId === "boutique") return err(`${l.nom} ne peut pas être repris`);
+          if (estCadeau(l) || l.ref === "SAC") return err(`${l.nom} ne peut pas être repris`);
           if (r.qte > l.qte - (l.retourne || 0)) return err(`${l.nom} : ${l.qte - (l.retourne || 0)} au maximum à reprendre`);
           const montant = Math.round((l.total * r.qte) / l.qte);
-          lignes.push({ ref: l.ref, nom: l.nom, artisanId: l.artisanId, artisanNom: l.artisanNom, qte: -r.qte, pu: l.pu, remise: null, total: -montant });
+          lignes.push({ ref: l.ref, nom: l.nom, artisanId: l.artisanId, artisanNom: l.artisanNom, qte: -r.qte, pu: l.pu, remise: null, total: -montant,
+            ...(l.fournisseurId ? { fournisseurId: l.fournisseurId, prixAchat: l.prixAchat, tvaVente: l.tvaVente } : {}) });
         }
         const total = lignes.reduce((t, l) => t + l.total, 0);
         const rembourse = ["avoir", "CB", "Espèces"].includes(body.remboursement) ? body.remboursement : "avoir";
@@ -779,6 +807,21 @@ export default async (req) => {
       const list = isAdmin ? prods : prods.filter((p) => p.artisanId === user.id);
       return json(list.sort((a, b) => a.ref.localeCompare(b.ref, "fr", { numeric: true })));
     }
+    if (path === "/produits" && m === "POST" && isAdmin && body.fournisseurId) {
+      const f = await getJSON(`fournisseurs/${body.fournisseurId}`);
+      if (!f) return err("Fournisseur introuvable");
+      if (!body.nom || !(toCents(body.prix) > 0)) return err("Nom et prix de vente obligatoires");
+      f.nextRef = f.nextRef || 1;
+      const ref = `${f.code}${String(f.nextRef).padStart(3, "0")}`;
+      f.nextRef += 1; await setJSON(`fournisseurs/${f.id}`, f);
+      const p = { ref, artisanId: "boutique", fournisseurId: f.id, nom: String(body.nom).trim(), prix: toCents(body.prix), prixAchat: toCents(body.prixAchat || 0),
+        tvaVente: [0, 5.5, 10, 20].includes(Number(body.tvaVente)) ? Number(body.tvaVente) : 20,
+        stock: body.stock === "" || body.stock == null ? null : Math.max(0, parseInt(body.stock, 10) || 0),
+        categorie: String(body.categorie || "").trim(), description: "", dlc: /^\d{4}-\d{2}-\d{2}$/.test(body.dlc || "") ? body.dlc : "",
+        seuil: body.seuil === "" || body.seuil == null ? null : Math.max(0, parseInt(body.seuil, 10) || 0), actif: true, creeLe: new Date().toISOString() };
+      await setJSON(`products/${ref}`, p);
+      return json(p);
+    }
     if (path === "/produits" && m === "POST") {
       const artisanId = isAdmin ? body.artisanId : user.id;
       const a = await getJSON(`artisans/${artisanId}`);
@@ -810,6 +853,7 @@ export default async (req) => {
         if (body.categorie != null) p.categorie = String(body.categorie).trim();
         if (body.description != null) p.description = String(body.description).trim();
         if (body.actif != null) p.actif = !!body.actif;
+        if (p.fournisseurId && isAdmin) { if (body.prixAchat != null && body.prixAchat !== "") p.prixAchat = toCents(body.prixAchat); if (body.tvaVente != null && body.tvaVente !== "") p.tvaVente = Number(body.tvaVente); }
         if (body.dlc !== undefined) p.dlc = /^\d{4}-\d{2}-\d{2}$/.test(body.dlc || "") ? body.dlc : "";
         if (body.seuil !== undefined) p.seuil = body.seuil === "" || body.seuil == null ? null : Math.max(0, parseInt(body.seuil, 10) || 0);
         await setJSON(`products/${p.ref}`, p);
@@ -909,14 +953,15 @@ export default async (req) => {
 
     // --- Inventaire (comptage du stock, écarts = démarque) ---
     if (path === "/inventaire" && m === "POST") {
-      const artisanId = isAdmin ? body.artisanId : user.id;
-      const a = await getJSON(`artisans/${artisanId}`);
+      const fourn = isAdmin && body.fournisseurId ? await getJSON(`fournisseurs/${body.fournisseurId}`) : null;
+      const artisanId = fourn ? "boutique" : isAdmin ? body.artisanId : user.id;
+      const a = fourn ? { id: "boutique", nom: fourn.nom } : await getJSON(`artisans/${artisanId}`);
       if (!a) return err("Artisan introuvable");
       const lignes = [];
       for (const r of body.lignes || []) {
         if (r.compte === "" || r.compte == null) continue;
         const p = await getJSON(`products/${r.ref}`);
-        if (!p || p.artisanId !== artisanId) continue;
+        if (!p || p.artisanId !== artisanId || (fourn && p.fournisseurId !== fourn.id)) continue;
         const compte = Math.max(0, parseInt(r.compte, 10) || 0);
         const theorique = typeof p.stock === "number" ? p.stock : null;
         const ecart = theorique === null ? 0 : compte - theorique;
@@ -964,6 +1009,47 @@ export default async (req) => {
       if (!x.facture) { x.facture = await numeroFacture((x.datePaiement || x.le).slice(0, 7)); await setJSON(`loyers/${a.id}/${x.id}`, x); }
       return json({ boutique: { nom: settings.nomBoutique, adresse: settings.adresse, siret: settings.siret, mentionTVA: settings.mentionTVA, ...infosTVA(settings) },
         artisan: { nom: a.nom, initiales: a.initiales, adresse: a.adresse || "", siret: a.siret || "", stand: a.stand, formule: a.formule }, paiement: x });
+    }
+
+    // --- Fournisseurs en dépôt : l'association achète uniquement ce qu'elle a vendu ---
+    if (path === "/fournisseurs" && m === "GET") {
+      const [F, prods] = await Promise.all([listJSON("fournisseurs/"), listJSON("products/")]);
+      return json(F.map((f) => { const P = prods.filter((p) => p.fournisseurId === f.id && p.actif !== false); return { ...f, nbProduits: P.length, valeurStockAchat: P.reduce((t, p) => t + (typeof p.stock === "number" ? p.stock * (p.prixAchat || 0) : 0), 0) }; }).sort((x, y) => x.nom.localeCompare(y.nom, "fr")));
+    }
+    if (path === "/fournisseurs" && m === "POST") {
+      const nom = String(body.nom || "").trim(), code = String(body.code || "").trim().toUpperCase();
+      if (!nom || !/^[A-Z]{2,3}$/.test(code)) return err("Nom et code de 2 ou 3 lettres obligatoires (début des références)");
+      const [F, A] = await Promise.all([listJSON("fournisseurs/"), listJSON("artisans/")]);
+      if (F.some((f) => f.code === code) || A.some((a) => a.initiales === code) || code === "SAC") return err("Ce code est déjà utilisé par un artisan ou un fournisseur");
+      const f = { id: uid(), nom, code, contact: String(body.contact || "").trim(), email: String(body.email || "").trim(), telephone: String(body.telephone || "").trim(),
+        adresse: String(body.adresse || "").trim(), siret: String(body.siret || "").trim(), delaiPaiement: parseInt(body.delaiPaiement, 10) || 30, actif: true, nextRef: 1, creeLe: new Date().toISOString() };
+      await setJSON(`fournisseurs/${f.id}`, f);
+      return json(f);
+    }
+    const mF = path.match(/^\/fournisseurs\/([a-f0-9-]+)(\/releve|\/paiement)?$/);
+    if (mF) {
+      const f = await getJSON(`fournisseurs/${mF[1]}`);
+      if (!f) return err("Fournisseur introuvable", 404);
+      if (!mF[2] && m === "PUT") {
+        for (const k of ["nom", "contact", "email", "telephone", "adresse", "siret"]) if (body[k] != null) f[k] = String(body[k]).trim();
+        if (body.delaiPaiement != null) f.delaiPaiement = parseInt(body.delaiPaiement, 10) || 30;
+        if (body.actif != null) f.actif = !!body.actif;
+        await setJSON(`fournisseurs/${f.id}`, f);
+        return json(f);
+      }
+      if (mF[2] === "/releve" && m === "GET") {
+        const mois = url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7);
+        return json(await releveFournisseur(f, mois, settings));
+      }
+      if (mF[2] === "/paiement" && m === "POST") {
+        const mois = String(body.mois || "");
+        if (!/^\d{4}-\d{2}$/.test(mois)) return err("Mois incorrect");
+        const key = `achatsF/${mois}/${f.id}`;
+        if (body.annuler) { await store().delete(key); return json({ ok: true }); }
+        const x = { mois, fournisseurId: f.id, facture: String(body.facture || "").trim(), montant: toCents(body.montant || 0), tva: toCents(body.tva || 0), date: /^\d{4}-\d{2}-\d{2}$/.test(body.date || "") ? body.date : parisDate(new Date().toISOString()), paye: !!body.paye };
+        await setJSON(key, x);
+        return json(x);
+      }
     }
 
     // --- Comptabilité : dépenses, TVA, compte de résultat ---

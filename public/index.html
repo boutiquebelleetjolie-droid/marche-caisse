@@ -196,11 +196,11 @@ function showLogin() {
 }
 
 function route(k) {
-  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["planning", "Permanences"], ["suivi", "Loyers et suivi"], ["compta", "Comptabilité"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
+  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["planning", "Permanences"], ["suivi", "Loyers et suivi"], ["compta", "Comptabilité"], ["artisans", "Artisans"], ["fournisseurs", "Fournisseurs"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
   const navR = [["catalogue", "Mon catalogue"], ["mesventes", "Mes ventes"], ["planning", "Permanences"], ["compte", "Mon compte"]];
   if (S.role === "admin") {
     setNav(navA, k);
-    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, planning: () => planningView(app), suivi: adminSuivi, compta: adminCompta, artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
+    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, planning: () => planningView(app), suivi: adminSuivi, compta: adminCompta, artisans: adminArtisans, fournisseurs: adminFournisseurs, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
   } else {
     setNav(navR, k);
     ({ catalogue: artisanCatalogue, mesventes: artisanVentes, planning: () => planningView(app), compte: compteView }[k] || artisanCatalogue)();
@@ -516,7 +516,7 @@ function ticketHTML(v) {
     <hr>
     ${v.lignes.map((l) => `<div>${esc(l.nom)}</div>
       <div class="l"><span>${l.qte} x ${eur(l.pu)}${l.remise ? ` (remise −${esc(l.remise.valeur)}${l.remise.type === "%" ? " %" : " €"})` : ""}</span><span>${eur(l.total)}</span></div>
-      <div style="font-size:11px">${l.ref === "CADEAU" ? "Code " + esc(l.code || "attribué à la synchronisation") + " – valable 1 an" : `Réf. ${esc(l.ref)} – ${v.type === "retour" ? "repris" : "vendu"} pour le compte de ${esc(l.artisanNom)}`}</div>`).join("<div style='height:4px'></div>")}
+      <div style="font-size:11px">${l.ref === "CADEAU" ? "Code " + esc(l.code || "attribué à la synchronisation") + " – valable 1 an" : (l.artisanId === "boutique" ? `Réf. ${esc(l.ref)}` : `Réf. ${esc(l.ref)} – ${v.type === "retour" ? "repris" : "vendu"} pour le compte de ${esc(l.artisanNom)}`)}</div>`).join("<div style='height:4px'></div>")}
     <hr>
     ${v.remiseTicket ? `<div class="l"><span>Remise sur le ticket (−${esc(v.remiseTicket.valeur)}${v.remiseTicket.type === "%" ? " %" : " €"})</span><span>−${eur(v.remiseTicket.montant)}</span></div>` : ""}
     <div class="l"><b>TOTAL</b><b>${eur(v.total)}</b></div>
@@ -857,7 +857,9 @@ async function adminCompta() {
       <div class="card"><h2>Recettes de la boutique</h2><table><tr><th>Type</th>${ass ? '<th class="num">HT</th><th class="num">TVA</th>' : ""}<th class="num">${ass ? "TTC" : "Montant"}</th></tr>
         ${d.recettes.map((r) => `<tr><td>${esc(r.type)}</td>${ass ? `<td class="num">${eur(r.ht)}</td><td class="num">${eur(r.tva)}</td>` : ""}<td class="num">${eur(r.ttc)}</td></tr>`).join("") || "<tr><td class='muted'>Aucune recette sur la période.</td></tr>"}
         <tr><td><b>Total</b></td>${ass ? `<td class="num"><b>${eur(d.totalRecettesHT)}</b></td><td class="num"><b>${eur(d.tvaCollectee)}</b></td>` : ""}<td class="num"><b>${eur(d.recettes.reduce((t, r) => t + r.ttc, 0))}</b></td></tr></table>
-        ${ass ? "" : `<p class="muted">${d.totalRecettesHT > 3750000 ? '<b style="color:var(--rouge)">Attention : plus de 37 500 € de recettes, la boutique devra facturer la TVA (à activer dans Paramètres).</b>' : `Franchise de TVA : seuil de 37 500 € par an, il reste ${eur(Math.max(0, 3750000 - d.totalRecettesHT))} sur cette période.`}</p>`}</div>
+        ${ass ? "" : (() => { const marchandises = d.recettes.filter((r) => ["Ventes de marchandises", "Ventes de sacs"].includes(r.type)).reduce((t, r) => t + r.ht, 0), services = d.totalRecettesHT - marchandises;
+          const trop = services > 3750000 || marchandises > 8500000;
+          return `<p class="muted">${trop ? '<b style="color:var(--rouge)">Attention : seuil de franchise dépassé, la boutique devra facturer la TVA (à activer dans Paramètres).</b>' : `Franchise de TVA sur l'année : loyers et commissions ${eur(services)} sur 37 500 € · ventes de marchandises ${eur(marchandises)} sur 85 000 €.`}</p>`; })()}</div>
       <div class="card"><h2>Dépenses</h2><table><tr><th>Catégorie</th>${ass ? '<th class="num">HT</th><th class="num">TVA</th>' : ""}<th class="num">TTC</th></tr>
         ${d.depenses.map((r) => `<tr><td>${esc(r.type)}</td>${ass ? `<td class="num">${eur(r.ht)}</td><td class="num">${eur(r.tva)}</td>` : ""}<td class="num">${eur(r.ttc)}</td></tr>`).join("") || "<tr><td class='muted'>Aucune dépense enregistrée.</td></tr>"}</table></div>
       ${ass ? `<div class="card"><h2>TVA à déclarer (aide à la déclaration CA12)</h2><table>
@@ -1421,10 +1423,99 @@ async function adminSuivi() {
   loyers(); reversements(); inventaires(); bons();
 }
 
+// ================== FOURNISSEURS EN DÉPÔT (achat uniquement de ce qui est vendu) ==================
+async function adminFournisseurs() {
+  app.innerHTML = `<div class="grid2"><div class="card"><h2>Nouveau fournisseur</h2>
+      <p class="muted">Le fournisseur laisse ses produits en dépôt. La boutique les vend en son nom, au prix qu'elle fixe, et chaque mois il facture uniquement ce qui a été vendu, au prix d'achat convenu.</p>
+      <div class="row"><div><label>Nom *</label><input id="fNo"></div><div style="max-width:140px"><label>Code (2–3 lettres) *</label><input id="fCo" maxlength="3" style="text-transform:uppercase" placeholder="ex. TER"></div></div>
+      <div class="row"><div><label>Contact</label><input id="fCt"></div><div><label>Téléphone</label><input id="fTe"></div></div>
+      <div class="row"><div><label>E-mail</label><input id="fEm"></div><div><label>SIRET</label><input id="fSi"></div></div>
+      <label>Adresse</label><input id="fAd"><label>Délai de paiement (jours)</label><input id="fDe" type="number" value="30">
+      <div id="fmsg"></div><button class="btn" id="fGo" style="margin-top:10px">Créer le fournisseur</button></div>
+    <div class="card"><h2>Fournisseurs</h2><div id="fList"></div></div></div><div id="fDet"></div>`;
+  const load = async () => {
+    const F = await api("/fournisseurs");
+    $("#fList").innerHTML = `<table><tr><th>Fournisseur</th><th class="num">Articles</th><th class="num">Stock (prix d'achat)</th><th></th></tr>${F.map((f) => `<tr><td><b>${esc(f.code)}</b> ${esc(f.nom)}<div class="muted">${esc(f.contact)} ${esc(f.telephone)}</div></td><td class="num">${f.nbProduits}</td><td class="num">${eur(f.valeurStockAchat)}</td><td class="num"><button class="btn small" data-fo="${f.id}">Ouvrir</button></td></tr>`).join("") || "<tr><td class='muted'>Aucun fournisseur.</td></tr>"}</table>`;
+    $("#fList").querySelectorAll("[data-fo]").forEach((b) => (b.onclick = () => detail(F.find((f) => f.id === b.dataset.fo))));
+  };
+  $("#fGo").onclick = async () => {
+    try { await api("/fournisseurs", { method: "POST", body: { nom: $("#fNo").value, code: $("#fCo").value, contact: $("#fCt").value, telephone: $("#fTe").value, email: $("#fEm").value, siret: $("#fSi").value, adresse: $("#fAd").value, delaiPaiement: $("#fDe").value } });
+      ["fNo", "fCo", "fCt", "fTe", "fEm", "fSi", "fAd"].forEach((i) => ($("#" + i).value = "")); msg($("#fmsg"), "Fournisseur créé.", "ok"); load(); }
+    catch (e) { msg($("#fmsg"), e.message); }
+  };
+  const detail = async (f) => {
+    const m0 = new Date(); m0.setMonth(m0.getMonth() - 1);
+    $("#fDet").innerHTML = `<div class="card"><div class="row" style="align-items:center"><h2 style="margin:0">${esc(f.nom)} – articles en dépôt</h2>
+        <button class="btn small ghost" id="fpInv" style="flex:0 0 auto">Inventaire</button><button class="btn small osb" id="fpEt" style="flex:0 0 auto">Étiquettes</button></div>
+      <div class="row" style="margin-top:10px"><div><label>Article *</label><input id="fpNo"></div><div><label>Prix d'achat (€)</label><input id="fpPa" inputmode="decimal"></div><div><label>Prix de vente (€) *</label><input id="fpPv" inputmode="decimal"></div></div>
+      <div class="row"><div><label>Quantité déposée</label><input id="fpSt" inputmode="numeric"></div><div><label>TVA à la vente</label><select id="fpTv"><option>20</option><option>10</option><option>5.5</option></select></div><div><label>Date limite (alimentaire)</label><input type="date" id="fpDl"></div></div>
+      <div id="fpmsg"></div><button class="btn" id="fpGo" style="margin-top:8px">Ajouter l'article</button><div id="fpList" style="margin-top:12px"></div></div>
+      <div class="card"><div class="row" style="align-items:flex-end"><h2 style="margin:0">Relevé mensuel des ventes</h2><div style="max-width:200px"><label>Mois</label><input type="month" id="frM" value="${ymd(m0).slice(0, 7)}"></div><div style="flex:0 0 auto"><button class="btn osb" id="frPr">Imprimer le relevé</button></div></div><div id="frRes" style="margin-top:10px"></div></div>`;
+    let P = [];
+    const prods = async () => {
+      P = (await api("/produits")).filter((p) => p.fournisseurId === f.id);
+      $("#fpList").innerHTML = `<table><tr><th>Réf.</th><th>Article</th><th class="num">Achat</th><th class="num">Vente</th><th class="num">Marge</th><th class="num">Stock</th></tr>${P.map((p) => `<tr><td><b>${esc(p.ref)}</b></td><td>${esc(p.nom)}${p.actif === false ? ' <span class="tag off">retiré</span>' : ""}</td><td class="num">${eur(p.prixAchat || 0)}</td><td class="num">${eur(p.prix)}</td><td class="num">${eur(p.prix - (p.prixAchat || 0))}</td><td class="num">${p.stock ?? "–"}</td></tr>`).join("") || "<tr><td class='muted'>Aucun article.</td></tr>"}</table>`;
+    };
+    const rel = async () => {
+      const r = await api(`/fournisseurs/${f.id}/releve?mois=${$("#frM").value}`);
+      const p = r.paiement;
+      $("#frRes").innerHTML = `<table><tr><th>Article</th><th class="num">Vendus</th><th class="num">Prix d'achat</th><th class="num">À payer au fournisseur</th><th class="num">Vendu en boutique</th></tr>
+        ${r.articles.map((a) => `<tr><td><b>${esc(a.ref)}</b> ${esc(a.nom)}</td><td class="num">${a.qte}</td><td class="num">${eur(a.prixAchat)}</td><td class="num">${eur(a.totalAchat)}</td><td class="num">${eur(a.totalVente)}</td></tr>`).join("") || "<tr><td class='muted'>Aucune vente ce mois-ci.</td></tr>"}
+        <tr><td><b>Total</b></td><td></td><td></td><td class="num"><b>${eur(r.totalAchat)}</b></td><td class="num"><b>${eur(r.totalVente)}</b></td></tr></table>
+        <p>Marge de la boutique : <b>${eur(r.totalVente - r.totalAchat)}</b></p>
+        <div class="row" style="align-items:flex-end"><div><label>N° de la facture reçue</label><input id="frFa" value="${esc(p?.facture || "")}"></div><div><label>Montant TTC facturé (€)</label><input id="frMt" inputmode="decimal" value="${((p?.montant ?? r.totalAchat) / 100).toFixed(2).replace(".", ",")}"></div><div><label>dont TVA (€)</label><input id="frTv" inputmode="decimal" value="${((p?.tva || 0) / 100).toFixed(2).replace(".", ",")}"></div>
+          <div><label>Payée le</label><input type="date" id="frDa" value="${p?.date || ""}"></div><div style="flex:0 0 auto"><button class="btn" id="frGo">Enregistrer</button></div></div>
+        ${p ? `<p class="muted">Facture ${esc(p.facture || "")} enregistrée${p.paye ? " et payée le " + fd(p.date) : ", à payer sous " + f.delaiPaiement + " jours"}.</p>` : ""}`;
+      $("#frGo").onclick = async () => { await api(`/fournisseurs/${f.id}/paiement`, { method: "POST", body: { mois: $("#frM").value, facture: $("#frFa").value, montant: $("#frMt").value, tva: $("#frTv").value, date: $("#frDa").value, paye: !!$("#frDa").value } }); rel(); };
+      $("#frPr").onclick = () => imprimerReleveFournisseur(r);
+    };
+    $("#fpGo").onclick = async () => {
+      try { await api("/produits", { method: "POST", body: { fournisseurId: f.id, nom: $("#fpNo").value, prixAchat: $("#fpPa").value, prix: $("#fpPv").value, stock: $("#fpSt").value, tvaVente: $("#fpTv").value, dlc: $("#fpDl").value } });
+        ["fpNo", "fpPa", "fpPv", "fpSt", "fpDl"].forEach((i) => ($("#" + i).value = "")); msg($("#fpmsg"), "Article ajouté.", "ok"); prods(); }
+      catch (e) { msg($("#fpmsg"), e.message); }
+    };
+    $("#fpEt").onclick = () => printLabels(P.filter((p) => p.actif !== false).map((p) => ({ ...p, artisanNom: S.settings.nomBoutique })));
+    $("#fpInv").onclick = () => faireInventaireF(P.filter((p) => p.actif !== false), f.id, prods);
+    $("#frM").onchange = rel;
+    prods(); rel(); $("#fDet").scrollIntoView({ behavior: "smooth" });
+  };
+  load();
+}
+function faireInventaireF(prods, fournisseurId, done) {
+  faireInventaire(prods, null, done);
+  const go = $("#invGo"), old = go.onclick;
+  go.onclick = async () => {
+    const lignes = [...document.querySelectorAll("[data-inv]")].filter((i) => i.value !== "").map((i) => ({ ref: i.dataset.inv, compte: i.value }));
+    try { const inv = await api("/inventaire", { method: "POST", body: { fournisseurId, lignes } }); closeModal(); alert(`Inventaire enregistré. Manquants : ${inv.manquants} (${eur(inv.demarque)} au prix de vente).`); done && done(); }
+    catch (e) { msg($("#invmsg"), e.message); }
+  };
+}
+function imprimerReleveFournisseur(r) {
+  const mm = new Date(r.mois + "-15").toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relevé ${esc(r.fournisseur.nom)} ${r.mois}</title><style>
+    body{font-family:Arial,sans-serif;font-size:12px;color:#222;max-width:190mm;margin:10mm auto}h1{font-size:18px;margin:0}h2{font-size:14px;margin:20px 0 8px;border-bottom:2px solid #6f8f72;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse}th,td{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}.n{text-align:right}.head{display:flex;justify-content:space-between;gap:20px}.box{border:1px solid #ccc;border-radius:6px;padding:10px;min-width:45%}
+    .tot td{font-weight:700;border-top:2px solid #222}.no-print{background:#4f6d52;color:#fff;text-align:center;padding:10px;cursor:pointer;margin-bottom:10px}@media print{.no-print{display:none}}</style></head><body>
+    <div class="no-print" onclick="window.print()">Imprimer ou enregistrer en PDF</div>
+    <div class="head"><div><h1>${esc(r.boutique.nom)}</h1>${esc(r.boutique.adresse)}${r.boutique.siret ? "<br>SIRET " + esc(r.boutique.siret) : ""}</div>
+      <div class="box"><b>${esc(r.fournisseur.nom)}</b><br>${esc(r.fournisseur.adresse || "")}${r.fournisseur.siret ? "<br>SIRET " + esc(r.fournisseur.siret) : ""}</div></div>
+    <h2>Relevé des ventes – ${mm}</h2><p>Merci de nous adresser votre facture pour les articles vendus ci-dessous, au prix d'achat convenu. Paiement sous ${r.fournisseur.delaiPaiement} jours après réception.</p>
+    <table><tr><th>Réf.</th><th>Article</th><th class="n">Quantité vendue</th><th class="n">Prix d'achat</th><th class="n">Montant à facturer</th></tr>
+      ${r.articles.map((a) => `<tr><td>${esc(a.ref)}</td><td>${esc(a.nom)}</td><td class="n">${a.qte}</td><td class="n">${eur(a.prixAchat)}</td><td class="n">${eur(a.totalAchat)}</td></tr>`).join("") || `<tr><td colspan="5">Aucune vente ce mois-ci.</td></tr>`}
+      <tr class="tot"><td colspan="4">Total à facturer</td><td class="n">${eur(r.totalAchat)}</td></tr></table>
+    <h2>Stock restant en dépôt</h2><table><tr><th>Réf.</th><th>Article</th><th class="n">Quantité</th></tr>${r.stock.map((p) => `<tr><td>${esc(p.ref)}</td><td>${esc(p.nom)}</td><td class="n">${p.stock ?? "–"}</td></tr>`).join("")}</table>
+    </body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); } else alert("Autorisez les fenêtres pop-up pour ce site.");
+}
+
 async function adminProduits() {
   app.innerHTML = `<div class="card"><div class="row" style="align-items:center"><h2 style="margin:0">Catalogue complet</h2><button class="btn small osb" id="admEtiq" style="flex:0 0 auto">Imprimer des étiquettes</button></div><input id="q" style="margin-top:10px" placeholder="Rechercher un article, une référence, un artisan"><div id="pl" style="margin-top:10px"></div></div>`;
-  const [P, A] = await Promise.all([api("/produits"), api("/artisans")]);
-  const noms = Object.fromEntries(A.map((a) => [a.id, a.nom]));
+  const [P, A, F] = await Promise.all([api("/produits"), api("/artisans"), api("/fournisseurs")]);
+  const noms = Object.fromEntries(A.map((a) => [a.id, a.nom])); noms.boutique = "Boutique";
+  const nomsF = Object.fromEntries(F.map((f) => [f.id, f.nom]));
+  P.forEach((p) => { if (p.fournisseurId) p.artisanId = "f:" + p.fournisseurId; });
+  F.forEach((f) => (noms["f:" + f.id] = f.nom + " (fournisseur)"));
   const render = () => {
     const q = $("#q").value.toLowerCase();
     const list = P.filter((p) => !q || p.nom.toLowerCase().includes(q) || p.ref.toLowerCase().includes(q) || (noms[p.artisanId] || "").toLowerCase().includes(q));
