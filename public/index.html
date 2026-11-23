@@ -801,7 +801,7 @@ async function planningView(cible, modeCaisse = false) {
 async function imprimerReleve(mois, artisanId) {
   const r = await api(`/releve?mois=${mois}${artisanId ? "&artisanId=" + artisanId : ""}`);
   const b = r.boutique, mm = new Date(mois + "-15").toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
-  const facture = r.commission + r.totalPenalites + (r.supplement || 0);
+  const facture = r.commission + r.totalPenalites + (r.supplement || 0) + (r.serviceEnvoi || 0);
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relevé ${esc(r.artisan.nom)} ${mois}</title><style>
     body{font-family:Arial,sans-serif;font-size:12px;color:#222;max-width:190mm;margin:10mm auto}h1{font-size:18px;margin:0}h2{font-size:14px;margin:22px 0 8px;border-bottom:2px solid #6f8f72;padding-bottom:4px}
     table{width:100%;border-collapse:collapse}th,td{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}td.n,th.n{text-align:right}
@@ -818,6 +818,7 @@ async function imprimerReleve(mois, artisanId) {
       <tr><td>Commission de ${r.commissionTaux} % sur les ventes réalisées pour votre compte (${eur(r.ca)})</td><td class="n">${eur(r.commission)}</td></tr>
       ${r.penalites.map((x) => `<tr><td>Pénalité : ${esc(x.motif)} le ${fd(x.date)} (${x.creneau === "matin" ? "matin" : "après-midi"})</td><td class="n">${eur(x.montant)}</td></tr>`).join("")}
       ${r.supplement ? `<tr><td>Supplément mensuel formule sans participation à l'accueil (${mm})</td><td class="n">${eur(r.supplement)}</td></tr>` : ""}
+      ${r.serviceEnvoi ? `<tr><td>Service dépôt par envoi : réception et installation des créations (${mm})</td><td class="n">${eur(r.serviceEnvoi)}</td></tr>` : ""}
       <tr class="tot"><td>Total ${esc(b.mentionTVA ? "" : "TTC")}</td><td class="n big">${eur(facture)}</td></tr></table>
     <p style="font-size:11px">${esc(b.mentionTVA)}<br>Montant déduit des ventes reversées ci-dessous.</p>
 
@@ -827,6 +828,7 @@ async function imprimerReleve(mois, artisanId) {
       <tr><td>Commission de la boutique (${r.commissionTaux} %)</td><td class="n">−${eur(r.commission)}</td></tr>
       ${r.totalPenalites ? `<tr><td>Pénalités</td><td class="n">−${eur(r.totalPenalites)}</td></tr>` : ""}
       ${r.supplement ? `<tr><td>Supplément formule sans participation à l'accueil</td><td class="n">−${eur(r.supplement)}</td></tr>` : ""}
+      ${r.serviceEnvoi ? `<tr><td>Service dépôt par envoi</td><td class="n">−${eur(r.serviceEnvoi)}</td></tr>` : ""}
       ${r.report ? `<tr><td>Reste dû du mois précédent (reporté)</td><td class="n">−${eur(r.report)}</td></tr>` : ""}
       <tr class="tot"><td>${r.aReverser >= 0 ? "Montant à reverser" : "Reste dû à la boutique (reporté sur le mois suivant)"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
     ${r.reversement ? `<p><b>Virement effectué le ${fd(r.reversement.date)} : ${eur(r.reversement.montant)}</b></p>` : r.aReverser > 0 ? `<p>Virement à venir, au plus tard le 10 du mois suivant.</p>` : ""}
@@ -1199,12 +1201,13 @@ async function adminArtisans() {
     const cats = {}; A.filter((a) => a.actif && a.categorie).forEach((a) => (cats[a.categorie] = (cats[a.categorie] || 0) + 1));
     $("#catList").innerHTML = Object.keys(cats).map((c) => `<option value="${esc(c)}">`).join("");
     $("#alist").innerHTML = (Object.keys(cats).length ? `<p class="muted">Par catégorie : ${Object.entries(cats).map(([c, n]) => `<span class="tag ${n >= 4 ? "off" : ""}">${esc(c)} ${n}/4</span>`).join(" ")}</p>` : "") + `<table><tr><th>Artisan</th><th>Identifiant</th><th>Stand</th><th>Contrat</th><th></th></tr>
-      ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${a.categorie ? esc(a.categorie) + " · " : ""}${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}<div class="muted">${a.formule === "sans accueil" ? "Sans accueil" + (a.formuleDepuis ? " dès le " + fd(a.formuleDepuis) : "") : "Avec accueil"}</div><button class="btn small ghost" data-form="${a.id}" data-v="${a.formule === "sans accueil" ? "avec accueil" : "sans accueil"}">${a.formule === "sans accueil" ? "Repasser avec accueil" : "Passer sans accueil"}</button></td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
+      ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${a.categorie ? esc(a.categorie) + " · " : ""}${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}<div class="muted">${a.formule === "sans accueil" ? "Sans accueil" + (a.formuleDepuis ? " dès le " + fd(a.formuleDepuis) : "") : "Avec accueil"}</div>${a.envoi ? '<div><span class="tag">Dépôt par envoi</span></div>' : ""}<button class="btn small ghost" data-env="${a.id}" data-v="${a.envoi ? "" : "1"}">${a.envoi ? "Arrêter l'envoi" : "Dépôt par envoi"}</button> <button class="btn small ghost" data-form="${a.id}" data-v="${a.formule === "sans accueil" ? "avec accueil" : "sans accueil"}">${a.formule === "sans accueil" ? "Repasser avec accueil" : "Passer sans accueil"}</button></td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
       <td class="num"><button class="btn small osb" data-rel="${a.id}">Relevé / facture</button> <button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
     $("#alist").querySelectorAll("[data-pw]").forEach((b) => (b.onclick = async () => {
       const pw = prompt("Nouveau mot de passe (6 caractères min.) :"); if (!pw) return;
       try { await api("/artisans/" + b.dataset.pw, { method: "PUT", body: { motdepasse: pw } }); alert("Mot de passe modifié."); } catch (e) { alert(e.message); }
     }));
+    $("#alist").querySelectorAll("[data-env]").forEach((b) => (b.onclick = async () => { if (b.dataset.v && !confirm("Dépôt par envoi : la boutique reçoit et installe les créations, " + eur(S.settings.supplementEnvoi ?? 2000) + " par mois en plus sur le relevé. Frais d'envoi et de retour à la charge de l'artisan. Activer ?")) return; await api("/artisans/" + b.dataset.env, { method: "PUT", body: { envoi: !!b.dataset.v } }); load(); }));
     $("#alist").querySelectorAll("[data-form]").forEach((b) => (b.onclick = async () => { await api("/artisans/" + b.dataset.form, { method: "PUT", body: { formule: b.dataset.v, formuleDepuis: "" } }); load(); }));
     $("#alist").querySelectorAll("[data-rel]").forEach((b) => (b.onclick = () => {
       const m = prompt("Mois du relevé (AAAA-MM) :", thisMonth()); if (!m) return;
@@ -1335,6 +1338,7 @@ async function adminParametres() {
       <div class="row"><div><label>Loyer stand 1 m (€)</label><input id="sP1" inputmode="decimal" value="${(s.prixStand1 / 100).toFixed(2).replace(".", ",")}"></div><div><label>Loyer stand 2 m (€)</label><input id="sP2" inputmode="decimal" value="${(s.prixStand2 / 100).toFixed(2).replace(".", ",")}"></div></div>
       <label>Supplément mensuel formule sans participation à l'accueil (€)</label><input id="sPen" inputmode="decimal" value="${((s.supplementSansAccueil ?? 5000) / 100).toFixed(2).replace(".", ",")}">
       <label>Frais d'installation, payés une fois à l'arrivée (€)</label><input id="sInst" inputmode="decimal" value="${((s.fraisInstallation ?? 5000) / 100).toFixed(2).replace(".", ",")}">
+      <label>Service dépôt par envoi, par mois (€)</label><input id="sEnv" inputmode="decimal" value="${((s.supplementEnvoi ?? 2000) / 100).toFixed(2).replace(".", ",")}">
       <label>Fond de caisse laissé dans le tiroir (€)</label><input id="sFond" inputmode="decimal" value="${(s.fondReserve / 100).toFixed(2).replace(".", ",")}">
       <div id="smsg"></div><button class="btn" id="sGo" style="margin-top:10px">Enregistrer</button></div>
     <div class="card"><h2>Poste caisse</h2>
@@ -1346,7 +1350,7 @@ async function adminParametres() {
     </div>
     <div class="card"><h2>Mot de passe gérance</h2><label>Nouveau mot de passe</label><input type="password" id="apw"><div id="apm"></div><button class="btn" id="apgo" style="margin-top:10px">Changer</button></div></div>`;
   $("#sGo").onclick = async () => {
-    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, supplementSansAccueil: $("#sPen").value, fraisInstallation: $("#sInst").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
+    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, supplementSansAccueil: $("#sPen").value, fraisInstallation: $("#sInst").value, supplementEnvoi: $("#sEnv").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
     catch (e) { msg($("#smsg"), e.message); }
   };
   if ($("#act")) $("#act").onclick = async () => {
