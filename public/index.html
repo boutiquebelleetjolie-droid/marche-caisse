@@ -117,6 +117,16 @@ const eur = (c) => ((c || 0) / 100).toLocaleString("fr-FR", { style: "currency",
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const today = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => new Date().toISOString().slice(0, 7);
+const ibanCache = (i) => (i ? i.slice(0, 4) + " •••• " + i.slice(-4) : "");
+const ibanLisible = (i) => (i || "").replace(/(.{4})/g, "$1 ").trim();
+const champsCoord = (a) => `<label>Adresse</label><textarea id="kAdr" rows="2">${esc(a.adresse || "")}</textarea>
+  <div class="row"><div><label>Téléphone</label><input id="kTel" value="${esc(a.telephone || "")}"></div><div><label>E-mail</label><input id="kMail" value="${esc(a.email || "")}"></div></div>
+  <label>SIRET</label><input id="kSiret" value="${esc(a.siret || "")}">
+  <h3 style="margin-top:14px">RIB (pour recevoir les virements)</h3>
+  <label>Titulaire du compte</label><input id="kTit" value="${esc(a.titulaire || "")}">
+  <label>IBAN</label><input id="kIban" value="${esc(ibanLisible(a.iban))}" placeholder="FR76 …" style="text-transform:uppercase">
+  <label>BIC</label><input id="kBic" value="${esc(a.bic || "")}" style="text-transform:uppercase">`;
+const valeursCoord = () => ({ adresse: $("#kAdr").value, telephone: $("#kTel").value, email: $("#kMail").value, siret: $("#kSiret").value, titulaire: $("#kTit").value, iban: $("#kIban").value, bic: $("#kBic").value });
 const libMode = (k) => ({ CB: "Carte bancaire", "Bon d'achat": "Bons, avoirs, cartes cadeaux utilisés (pas dans le tiroir)", "Avoir émis": "Avoirs émis pour des retours" }[k] || k);
 const fdate = (iso) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 let S = { token: localStorage.getItem("token"), role: localStorage.getItem("role"), nom: localStorage.getItem("nom"), cle: localStorage.getItem("cleCaisse"), initiales: localStorage.getItem("initiales") || "", settings: {} };
@@ -810,7 +820,7 @@ async function imprimerReleve(mois, artisanId) {
     @media print{.no-print{display:none}h2{break-after:avoid}.page2{break-before:page}}</style></head><body>
     <div class="no-print" onclick="window.print()">Imprimer ou enregistrer en PDF</div>
     <div class="head"><div><h1>${esc(b.nom)}</h1>${esc(b.adresse)}${b.siret ? "<br>SIRET " + esc(b.siret) : ""}</div>
-      <div class="box"><b>${esc(r.artisan.nom)}</b> (${esc(r.artisan.initiales)})<br>${esc(r.artisan.email || "")} ${esc(r.artisan.telephone || "")}<br>Stand ${esc(r.artisan.stand || "")}</div></div>
+      <div class="box"><b>${esc(r.artisan.nom)}</b> (${esc(r.artisan.initiales)})<br>${r.artisan.adresse ? esc(r.artisan.adresse).replace(/\n/g, "<br>") + "<br>" : ""}${r.artisan.siret ? "SIRET " + esc(r.artisan.siret) + "<br>" : ""}${esc(r.artisan.email || "")} ${esc(r.artisan.telephone || "")}<br>Stand ${esc(r.artisan.stand || "")}</div></div>
 
     <h2>Facture de commission n° ${esc(r.facture.numero)}</h2>
     <p>Date : ${new Date().toLocaleDateString("fr-FR")} · Période : ${mm}</p>
@@ -831,6 +841,7 @@ async function imprimerReleve(mois, artisanId) {
       ${r.serviceEnvoi ? `<tr><td>Service dépôt par envoi</td><td class="n">−${eur(r.serviceEnvoi)}</td></tr>` : ""}
       ${r.report ? `<tr><td>Reste dû du mois précédent (reporté)</td><td class="n">−${eur(r.report)}</td></tr>` : ""}
       <tr class="tot"><td>${r.aReverser >= 0 ? "Montant à reverser" : "Reste dû à la boutique (reporté sur le mois suivant)"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
+    ${r.aReverser > 0 ? `<p>Virement sur le compte ${r.artisan.iban ? esc(ibanCache(r.artisan.iban)) + (r.artisan.titulaire ? " (" + esc(r.artisan.titulaire) + ")" : "") : "<b>RIB à fournir</b>"}</p>` : ""}
     ${r.reversement ? `<p><b>Virement effectué le ${fd(r.reversement.date)} : ${eur(r.reversement.montant)}</b></p>` : r.aReverser > 0 ? `<p>Virement à venir, au plus tard le 10 du mois suivant.</p>` : ""}
     <p style="font-size:11px">Loyer de base du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer - (r.supplement || 0))} par mois, réglé au début de chaque mois selon le contrat${r.supplement ? ` ; le supplément de ${eur(r.supplement)} de la formule sans participation est facturé ci-dessus et déduit des ventes du mois` : ""}.</p>
 
@@ -1058,9 +1069,12 @@ async function artisanVentes() {
   pp.bind();
 }
 
-function compteView() {
+async function compteView() {
   const isAdm = S.role === "admin";
-  app.innerHTML = `<div class="card" style="max-width:460px"><h2>Changer mon mot de passe</h2>
+  const me = isAdm ? null : await api("/me");
+  app.innerHTML = `${isAdm ? "" : `<div class="card" style="max-width:560px"><h2>Mes coordonnées et mon RIB</h2><p class="muted">Ils figurent sur vos factures et servent au virement de vos ventes. Seule la gérance les voit.</p>
+    ${champsCoord(me)}<div id="km"></div><button class="btn" id="kgo" style="margin-top:10px">Enregistrer</button></div>`}
+    <div class="card" style="max-width:460px"><h2>Changer mon mot de passe</h2>
     ${isAdm ? "" : `<label>Mot de passe actuel</label><input type="password" id="pa">`}
     <label>Nouveau mot de passe (6 caractères min.)</label><input type="password" id="pn">
     <div id="pm"></div><button class="btn" id="pgo" style="margin-top:10px">Enregistrer</button></div>`;
@@ -1068,6 +1082,7 @@ function compteView() {
     try { await api("/motdepasse", { method: "POST", body: { actuel: $("#pa")?.value, nouveau: $("#pn").value } }); msg($("#pm"), "Mot de passe modifié.", "ok"); }
     catch (e) { msg($("#pm"), e.message); }
   };
+  if ($("#kgo")) $("#kgo").onclick = async () => { try { await api("/me/coordonnees", { method: "PUT", body: valeursCoord() }); msg($("#km"), "Coordonnées enregistrées.", "ok"); } catch (e) { msg($("#km"), e.message); } };
 }
 
 // ================== ESPACE GÉRANCE ==================
@@ -1202,7 +1217,13 @@ async function adminArtisans() {
     $("#catList").innerHTML = Object.keys(cats).map((c) => `<option value="${esc(c)}">`).join("");
     $("#alist").innerHTML = (Object.keys(cats).length ? `<p class="muted">Par catégorie : ${Object.entries(cats).map(([c, n]) => `<span class="tag ${n >= 4 ? "off" : ""}">${esc(c)} ${n}/4</span>`).join(" ")}</p>` : "") + `<table><tr><th>Artisan</th><th>Identifiant</th><th>Stand</th><th>Contrat</th><th></th></tr>
       ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${a.categorie ? esc(a.categorie) + " · " : ""}${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}<div class="muted">${a.formule === "sans accueil" ? "Sans accueil" + (a.formuleDepuis ? " dès le " + fd(a.formuleDepuis) : "") : "Avec accueil"}</div>${a.envoi ? '<div><span class="tag">Dépôt par envoi</span></div>' : ""}<button class="btn small ghost" data-env="${a.id}" data-v="${a.envoi ? "" : "1"}">${a.envoi ? "Arrêter l'envoi" : "Dépôt par envoi"}</button> <button class="btn small ghost" data-form="${a.id}" data-v="${a.formule === "sans accueil" ? "avec accueil" : "sans accueil"}">${a.formule === "sans accueil" ? "Repasser avec accueil" : "Passer sans accueil"}</button></td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
-      <td class="num"><button class="btn small osb" data-rel="${a.id}">Relevé / facture</button> <button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
+      <td class="num"><button class="btn small ${a.iban ? "ghost" : "danger"}" data-coord="${a.id}">${a.iban ? "Adresse et RIB" : "RIB manquant"}</button> <button class="btn small osb" data-rel="${a.id}">Relevé / facture</button> <button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
+    $("#alist").querySelectorAll("[data-coord]").forEach((b) => (b.onclick = () => {
+      const a = A.find((x) => x.id === b.dataset.coord);
+      openModal(`<h2>${esc(a.nom)} – adresse et RIB</h2>${champsCoord(a)}<div id="km"></div>
+        <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="kgo">Enregistrer</button></div>`);
+      $("#kgo").onclick = async () => { try { await api("/artisans/" + a.id, { method: "PUT", body: valeursCoord() }); closeModal(); load(); } catch (e) { msg($("#km"), e.message); } };
+    }));
     $("#alist").querySelectorAll("[data-pw]").forEach((b) => (b.onclick = async () => {
       const pw = prompt("Nouveau mot de passe (6 caractères min.) :"); if (!pw) return;
       try { await api("/artisans/" + b.dataset.pw, { method: "PUT", body: { motdepasse: pw } }); alert("Mot de passe modifié."); } catch (e) { alert(e.message); }
@@ -1281,7 +1302,7 @@ async function adminSuivi() {
   };
   const reversements = async () => {
     const mois = $("#suM").value, R = await api("/reversements?mois=" + mois);
-    $("#suRev").innerHTML = `<table><tr><th>Artisan</th><th class="num">Ventes</th><th class="num">Facture</th><th class="num">À reverser</th><th>Virement</th><th></th></tr>${R.map((r) => `<tr><td><b>${esc(r.initiales)}</b> ${esc(r.nom)}</td><td class="num">${eur(r.ca)}</td><td class="num">${eur(r.commission + r.supplement)}${r.report ? `<div class="muted">+ report ${eur(r.report)}</div>` : ""}</td>
+    $("#suRev").innerHTML = `<table><tr><th>Artisan</th><th class="num">Ventes</th><th class="num">Facture</th><th class="num">À reverser</th><th>Virement</th><th></th></tr>${R.map((r) => `<tr><td><b>${esc(r.initiales)}</b> ${esc(r.nom)}<div class="muted" style="font-size:12px">${r.iban ? esc(ibanLisible(r.iban)) + (r.bic ? " · " + esc(r.bic) : "") + "<br>" + esc(r.titulaire) : '<span style="color:var(--rouge)">RIB manquant</span>'}</div></td><td class="num">${eur(r.ca)}</td><td class="num">${eur(r.commission + r.supplement)}${r.report ? `<div class="muted">+ report ${eur(r.report)}</div>` : ""}</td>
       <td class="num"><b style="color:${r.aReverser < 0 ? "var(--rouge)" : "inherit"}">${r.aReverser < 0 ? "Reste dû " + eur(-r.aReverser) : eur(r.aReverser)}</b></td>
       <td>${r.fait ? `<span class="tag">Payé le ${fd(r.fait.date)} · ${eur(r.fait.montant)}</span>` : r.aReverser > 0 ? '<span class="tag off">à faire</span>' : '<span class="muted">rien à verser</span>'}</td>
       <td class="num"><button class="btn small osb" data-rr="${r.artisanId}">Relevé</button> ${r.fait ? `<button class="btn small ghost" data-rx="${r.artisanId}">Annuler</button>` : r.aReverser > 0 ? `<button class="btn small" data-rp="${r.artisanId}" data-v="${r.aReverser}">Marquer payé</button>` : ""}</td></tr>`).join("") || "<tr><td class='muted'>Aucun artisan.</td></tr>"}

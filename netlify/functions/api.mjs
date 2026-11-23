@@ -85,6 +85,27 @@ async function getSettings() {
   };
 }
 
+// Coordonnées et RIB de l'artisan (pour la facture et les virements)
+function ibanValide(iban) {
+  const x = iban.replace(/\s+/g, "").toUpperCase();
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(x)) return false;
+  const r = (x.slice(4) + x.slice(0, 4)).replace(/[A-Z]/g, (c) => c.charCodeAt(0) - 55);
+  let mod = 0; for (const ch of r) mod = (mod * 10 + +ch) % 97;
+  return mod === 1;
+}
+function majCoordonnees(a, body) {
+  for (const k of ["adresse", "telephone", "email", "titulaire", "siret"]) if (body[k] != null) a[k] = String(body[k]).trim();
+  if (body.iban != null) {
+    const iban = String(body.iban).replace(/\s+/g, "").toUpperCase();
+    if (iban && !ibanValide(iban)) throw new UErr("IBAN incorrect : vérifiez les chiffres");
+    a.iban = iban;
+  }
+  if (body.bic != null) {
+    const bic = String(body.bic).replace(/\s+/g, "").toUpperCase();
+    if (bic && !/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(bic)) throw new UErr("BIC incorrect (8 ou 11 caractères)");
+    a.bic = bic;
+  }
+}
 function publicArtisan(a) {
   const { pw, ...rest } = a;
   return rest;
@@ -312,7 +333,7 @@ async function releve(mois, artisanId) {
   }
   return {
     mois, du: c.du, au: c.au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA },
-    artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand },
+    artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand, adresse: a.adresse || "", siret: a.siret || "", iban: a.iban || "", titulaire: a.titulaire || "" },
     lignes: c.lignes, ca: c.ca, commissionTaux: s.commission, commission: c.commission, penalites: [], totalPenalites: 0, loyer,
     formule: c.sansAccueil ? "sans participation à l'accueil" : "avec participation à l'accueil",
     supplement: c.supplement, serviceEnvoi: c.serviceEnvoi, report: c.report, aReverser: c.solde, facture: fac, reversement: await getJSON(`reversements/${mois}/${artisanId}`),
@@ -666,6 +687,13 @@ export default async (req) => {
       return json({ role: "artisan", ...publicArtisan(a) });
     }
 
+    if (path === "/me/coordonnees" && m === "PUT") {
+      if (isAdmin) return err("Réservé aux artisans");
+      const a = await getJSON(`artisans/${user.id}`);
+      majCoordonnees(a, body);
+      await setJSON(`artisans/${a.id}`, a);
+      return json(publicArtisan(a));
+    }
     if (path === "/motdepasse" && m === "POST") {
       const nouveau = String(body.nouveau || "");
       if (nouveau.length < 6) return err("Le mot de passe doit faire au moins 6 caractères");
@@ -874,7 +902,7 @@ export default async (req) => {
       const arts = (await listJSON("artisans/")).filter((a) => a.actif || (a.dateDebut || "") <= mois);
       const faits = Object.fromEntries((await listJSON(`reversements/${mois}/`)).map((r) => [r.artisanId, r]));
       const out = [];
-      for (const a of arts) { const c = await calculMois(mois, a, settings); out.push({ artisanId: a.id, nom: a.nom, initiales: a.initiales, ca: c.ca, commission: c.commission, supplement: c.supplement + c.serviceEnvoi, report: c.report, aReverser: c.solde, fait: faits[a.id] || null }); }
+      for (const a of arts) { const c = await calculMois(mois, a, settings); out.push({ artisanId: a.id, nom: a.nom, initiales: a.initiales, iban: a.iban || "", bic: a.bic || "", titulaire: a.titulaire || a.nom, ca: c.ca, commission: c.commission, supplement: c.supplement + c.serviceEnvoi, report: c.report, aReverser: c.solde, fait: faits[a.id] || null }); }
       return json(out.sort((x, y) => x.nom.localeCompare(y.nom, "fr")));
     }
     if (path === "/reversements" && m === "POST") {
@@ -909,6 +937,7 @@ export default async (req) => {
         metier: String(body.metier || "").trim(), categorie, envoi: !!body.envoi, telephone: String(body.telephone || "").trim(), email: String(body.email || "").trim(),
         stand: String(body.stand || "1 m"), formule: body.formule === "sans accueil" ? "sans accueil" : "avec accueil", dateDebut: String(body.dateDebut || "").slice(0, 10), actif: true, nextRef: 1, creeLe: new Date().toISOString(),
       };
+      majCoordonnees(a, body);
       await setJSON(`artisans/${a.id}`, a);
       return json(publicArtisan(a));
     }
@@ -918,6 +947,7 @@ export default async (req) => {
       if (!a) return err("Artisan introuvable", 404);
       for (const k of ["nom", "metier", "categorie", "telephone", "email", "stand", "dateDebut", "formule", "formuleDepuis"]) if (body[k] != null) a[k] = String(body[k]).trim();
       if (body.envoi != null) a.envoi = !!body.envoi;
+      majCoordonnees(a, body);
       if (body.actif != null) a.actif = !!body.actif;
       if (body.motdepasse) { if (String(body.motdepasse).length < 6) return err("Mot de passe : 6 caractères minimum"); a.pw = hashPw(body.motdepasse); }
       await setJSON(`artisans/${a.id}`, a);
