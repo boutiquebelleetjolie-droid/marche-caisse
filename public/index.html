@@ -85,6 +85,7 @@
   #ticket{font-family:"Courier New",monospace;font-size:13px;width:72mm;margin:0 auto;color:#000}
   #ticket .c{text-align:center} #ticket hr{border:0;border-top:1px dashed #000}
   #ticket .l{display:flex;justify-content:space-between;gap:6px}
+  #ticket svg{width:100%;height:100%;display:block}
   /* Étiquettes */
   #labels{display:flex;flex-wrap:wrap;gap:6px}
   .label{width:62mm;border:1px dashed #bbb;padding:6px;text-align:center;font-size:11px;background:#fff}
@@ -116,6 +117,7 @@ const eur = (c) => ((c || 0) / 100).toLocaleString("fr-FR", { style: "currency",
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const today = () => new Date().toISOString().slice(0, 10);
 const thisMonth = () => new Date().toISOString().slice(0, 7);
+const libMode = (k) => ({ CB: "Carte bancaire", "Bon d'achat": "Bons, avoirs, cartes cadeaux utilisés (pas dans le tiroir)", "Avoir émis": "Avoirs émis pour des retours" }[k] || k);
 const fdate = (iso) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 let S = { token: localStorage.getItem("token"), role: localStorage.getItem("role"), nom: localStorage.getItem("nom"), cle: localStorage.getItem("cleCaisse"), initiales: localStorage.getItem("initiales") || "", settings: {} };
 
@@ -183,11 +185,11 @@ function showLogin() {
 }
 
 function route(k) {
-  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["planning", "Permanences"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
+  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["planning", "Permanences"], ["suivi", "Loyers et suivi"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
   const navR = [["catalogue", "Mon catalogue"], ["mesventes", "Mes ventes"], ["planning", "Permanences"], ["compte", "Mon compte"]];
   if (S.role === "admin") {
     setNav(navA, k);
-    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, planning: () => planningView(app), artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
+    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, planning: () => planningView(app), suivi: adminSuivi, artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
   } else {
     setNav(navR, k);
     ({ catalogue: artisanCatalogue, mesventes: artisanVentes, planning: () => planningView(app), compte: compteView }[k] || artisanCatalogue)();
@@ -206,10 +208,11 @@ async function showCaisse() {
   app.innerHTML = `
   <div class="caisse">
     <div class="card">
-      <div class="row" style="align-items:center">
-        <h2 style="margin:0">Caisse</h2>
-        <div style="flex:0 0 auto" class="row">
+      <h2 style="margin:0 0 8px">Caisse</h2>
+      <div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
           <button class="btn small ghost" id="cJour">Ventes du jour</button>
+          <button class="btn small ghost" id="cRetour">Retour / échange</button>
           ${S.role === "admin" && S.token ? `<button class="btn small ghost" id="cSortie">Sortie d'espèces</button>` : ""}
           <button class="btn small" id="cZ">Clôture / Ticket Z</button>
           <button class="btn small osb" id="cEtiq">Étiquettes</button>
@@ -219,7 +222,8 @@ async function showCaisse() {
         </div>
       </div>
       <div id="cSession"></div>
-      <div class="row" style="margin-bottom:8px"><button class="btn osb" id="cSac" style="flex:0 0 auto">+ Sac 0,20 €</button></div>
+      <div id="cVendeur"></div>
+      <div class="row" style="margin-bottom:8px"><button class="btn osb" id="cSac" style="flex:0 0 auto">+ Sac 0,20 €</button><button class="btn ghost" id="cCadeau" style="flex:0 0 auto">+ Carte cadeau</button></div>
       <input class="scan" id="scan" placeholder="Scanner ou taper une référence / un nom d'article" autofocus autocomplete="off">
       <div id="cmsg"></div>
       <div class="results" id="results"></div>
@@ -228,12 +232,14 @@ async function showCaisse() {
       <h2>Ticket en cours</h2>
       <div id="cart"></div>
       <div class="row" style="margin-top:6px"><button class="btn small ghost" id="cRemT" style="flex:0 0 auto">Remise sur le ticket</button><span id="remT" class="muted" style="text-align:right"></span></div>
+      <div id="bonZone"></div>
       <div class="total" id="total">0,00 €</div>
       <div class="pay">
         <button class="btn" data-pay="CB">Carte</button>
         <button class="btn osb" data-pay="Espèces">Espèces</button>
         <button class="btn ghost" data-pay="Mixte">Carte + espèces</button>
       </div>
+      <button class="btn ghost" id="cBon" style="width:100%;margin-top:8px">Payer avec un bon d'achat, un avoir ou une carte cadeau</button>
       <div class="row" style="margin-top:10px">
         <button class="btn ghost small" id="cAtt">Mettre en attente</button>
         <button class="btn ghost small" id="cAttList">Tickets en attente</button>
@@ -253,6 +259,15 @@ async function showCaisse() {
   $("#cRemT").onclick = () => saisirRemise("Remise sur tout le ticket", REM_TICKET, (r) => { REM_TICKET = r; renderCart(); });
   $("#cSac").onclick = () => { const p = PRODS.find((x) => x.ref === "SAC"); if (p) addToCart(p); $("#scan").focus(); };
   $("#cAttList").onclick = listeAttente;
+  $("#cRetour").onclick = retourClient;
+  $("#cBon").onclick = saisirBon;
+  $("#cCadeau").onclick = () => {
+    const m = prompt("Montant de la carte cadeau (€) :", "20"); if (!m) return;
+    const c = Math.round(parseFloat(m.replace(",", ".")) * 100);
+    if (!(c > 0)) return alert("Montant incorrect");
+    CART.push({ ref: "CADEAU", nom: "Carte cadeau", prix: c, artisanNom: "Carte cadeau", qte: 1, cadeau: true }); renderCart();
+  };
+  afficherVendeur();
   document.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => payer(b.dataset.pay)));
   const scan = $("#scan");
   scan.oninput = () => renderResults(scan.value);
@@ -288,12 +303,13 @@ function renderResults(q) {
   const list = filterProds(q);
   el.innerHTML = list.map((p) => `
     <div class="prod" data-ref="${esc(p.ref)}">
-      <div><b>${esc(p.nom)}</b><span class="muted">${esc(p.ref)} · ${esc(p.artisanNom)}${typeof p.stock === "number" ? " · stock " + p.stock : ""}</span></div>
+      <div><b>${esc(p.nom)}</b><span class="muted">${esc(p.ref)} · ${esc(p.artisanNom)}${typeof p.stock === "number" ? " · stock " + p.stock : ""}</span>${p.dlc && p.dlc < ymd(new Date()) ? ' <span class="tag off">DLC dépassée</span>' : ""}</div>
       <div><b>${eur(p.prix)}</b></div>
     </div>`).join("") || `<p class="muted">Aucun article.</p>`;
   el.querySelectorAll(".prod").forEach((d) => (d.onclick = () => { addToCart(PRODS.find((p) => p.ref === d.dataset.ref)); $("#scan").value = ""; renderResults(""); $("#scan").focus(); }));
 }
 function addToCart(p) {
+  if (p.dlc && p.dlc < ymd(new Date()) && !confirm(`Attention : la date limite de « ${p.nom} » est dépassée (${fd(p.dlc)}). Vendre quand même ?`)) return;
   const l = CART.find((x) => x.ref === p.ref);
   if (l) l.qte++; else CART.push({ ref: p.ref, nom: p.nom, prix: p.prix, artisanNom: p.artisanNom, qte: 1 });
   msg($("#cmsg"), ""); renderCart();
@@ -306,12 +322,16 @@ function calcRemise(r, base) {
   if (!(v > 0)) return 0;
   return Math.min(base, r.type === "%" ? Math.round((base * Math.min(v, 100)) / 100) : Math.round(v * 100));
 }
+let BON = null; // bon d'achat / avoir / carte cadeau utilisé sur le ticket en cours
 function calcPanier() {
-  const lignes = CART.map((l) => { const brut = l.prix * l.qte, rem = calcRemise(l.remise, brut); return { ...l, pu: l.prix, brut, remiseMontant: rem, total: brut - rem }; });
-  const st = lignes.reduce((t, l) => t + l.total, 0);
+  const lignes = CART.map((l) => { const brut = l.prix * l.qte, rem = l.cadeau ? 0 : calcRemise(l.remise, brut); return { ...l, pu: l.prix, brut, remiseMontant: rem, total: brut - rem }; });
+  const rem = lignes.filter((l) => !l.cadeau);
+  const st = rem.reduce((t, l) => t + l.total, 0);
   const rt = calcRemise(REM_TICKET, st);
-  if (rt > 0) { let reste = rt; lignes.forEach((l, i) => { const part = i === lignes.length - 1 ? reste : Math.round((rt * l.total) / st); l.total -= part; reste -= part; }); }
-  return { lignes, sousTotal: st, remiseTicket: rt, total: lignes.reduce((t, l) => t + l.total, 0) };
+  if (rt > 0) { let reste = rt; rem.forEach((l, i) => { const part = i === rem.length - 1 ? reste : Math.round((rt * l.total) / st); l.total -= part; reste -= part; }); }
+  const total = lignes.reduce((t, l) => t + l.total, 0);
+  const partBon = BON ? Math.min(BON.solde, total) : 0;
+  return { lignes, sousTotal: st, remiseTicket: rt, total, partBon, aPayer: total - partBon };
 }
 function saisirRemise(titre, actuelle, ok) {
   openModal(`<h2>${esc(titre)}</h2>
@@ -329,8 +349,8 @@ function renderCart() {
   el.innerHTML = P.lignes.map((l, i) => `
     <div class="cart-line">
       <div><b>${esc(l.nom)}</b><div class="muted">${esc(l.ref)} · ${esc(l.artisanNom)}</div>
-        <button class="btn small ghost" data-rem="${i}" style="margin-top:4px;padding:2px 8px">${l.remise ? "Remise −" + esc(l.remise.valeur) + (l.remise.type === "%" ? " %" : " €") : "Remise"}</button></div>
-      <div class="qty"><button data-i="${i}" data-d="-1">−</button><span>${l.qte}</span><button data-i="${i}" data-d="1">+</button></div>
+        ${l.cadeau ? "" : `<button class="btn small ghost" data-rem="${i}" style="margin-top:4px;padding:2px 8px">${l.remise ? "Remise −" + esc(l.remise.valeur) + (l.remise.type === "%" ? " %" : " €") : "Remise"}</button>`}</div>
+      <div class="qty">${l.cadeau ? "" : `<button data-i="${i}" data-d="-1">−</button><span>${l.qte}</span><button data-i="${i}" data-d="1">+</button>`}</div>
       <div class="num">${l.remiseMontant ? `<s class="muted">${eur(l.brut)}</s><br>` : ""}<b>${eur(l.brut - l.remiseMontant)}</b></div>
       <button class="btn small ghost" data-del="${i}">✕</button>
     </div>`).join("") || `<p class="muted">Scannez un article pour commencer.</p>`;
@@ -339,7 +359,18 @@ function renderCart() {
   const supprimer = (i, n) => { const l = CART[i]; justifier("Retirer un article du panier", { type: "ligne", detail: n + " × " + l.nom + " (" + l.artisanNom + ")", montant: l.prix * n }, () => { l.qte -= n; if (l.qte < 1) CART.splice(i, 1); renderCart(); }); };
   el.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const i = +b.dataset.i; if (+b.dataset.d > 0) { CART[i].qte++; renderCart(); } else supprimer(i, 1); }));
   el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => supprimer(+b.dataset.del, CART[+b.dataset.del].qte)));
-  $("#total").textContent = eur(P.total);
+  $("#total").textContent = eur(P.aPayer);
+  if ($("#bonZone")) $("#bonZone").innerHTML = BON ? `<div class="msg ok">${esc(BON.type === "avoir" ? "Avoir" : "Carte cadeau")} ${esc(BON.code)} (solde ${eur(BON.solde)}) : −${eur(P.partBon)} <button class="btn small ghost" id="bonX">Retirer</button><div class="muted">Total du ticket ${eur(P.total)}</div></div>` : "";
+  if ($("#bonX")) $("#bonX").onclick = () => { BON = null; renderCart(); };
+}
+async function saisirBon() {
+  const code = prompt("Code du bon d'achat, de l'avoir ou de la carte cadeau (scanner ou taper) :"); if (!code) return;
+  try {
+    const b = await api("/caisse/bon/" + encodeURIComponent(code.trim().toUpperCase()));
+    if (b.expire < ymd(new Date())) return alert("Ce bon a expiré le " + fd(b.expire));
+    if (!(b.solde > 0)) return alert("Ce bon a déjà été entièrement utilisé.");
+    BON = b; renderCart();
+  } catch (e) { alert(navigator.onLine ? e.message : "Les bons d'achat ne peuvent être utilisés qu'avec une connexion internet."); }
 }
 const estGerant = () => S.role === "admin" && !!S.token;
 // Demande une justification (sauf pour la gérance), l'enregistre dans le journal puis exécute l'action
@@ -351,7 +382,7 @@ function justifier(titre, infos, action, appel) {
   if (estGerant()) { envoyer("", "").then(action).catch((e) => alert(e.message)); return; }
   openModal(`<h2>${esc(titre)}</h2><p class="muted">Une justification est demandée. Elle sera transmise à la gérance.</p>
     ${infos.detail ? `<p><b>${esc(infos.detail)}</b></p>` : ""}
-    <label>Votre nom *</label><input id="jPar"><label>Justification *</label><textarea id="jMot" placeholder="ex. erreur de saisie, client a changé d'avis…"></textarea>
+    <label>Votre nom *</label><input id="jPar" value="${esc(VENDEUR()?.nom || "")}"><label>Justification *</label><textarea id="jMot" placeholder="ex. erreur de saisie, client a changé d'avis…"></textarea>
     <div id="jmsg"></div><div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn danger" id="jGo">Confirmer</button></div>`);
   $("#jGo").onclick = async () => {
     const par = $("#jPar").value.trim(), motif = $("#jMot").value.trim();
@@ -385,7 +416,9 @@ async function listeAttente() {
 
 function payer(mode) {
   if (!CART.length) return msg($("#cmsg"), "Le panier est vide.");
-  const P = calcPanier(), total = P.total;
+  if (!estGerant() && !VENDEUR()) return choisirVendeur(() => payer(mode));
+  const P = calcPanier(), total = P.aPayer;
+  if (total === 0 && BON) return encaisser(mode, P, {});
   const esp = mode === "Espèces", mix = mode === "Mixte";
   openModal(`
     <h2>Paiement : ${mix ? "carte + espèces" : esc(mode)}</h2>
@@ -412,18 +445,22 @@ function payer(mode) {
     if (mix && (cents("pCb") <= 0 || cents("pCb") >= total)) return msg($("#pmsg"), "Indiquez la part payée par carte (inférieure au total).");
     if ((esp || mix) && cents("recu") && cents("recu") < partEsp()) return msg($("#pmsg"), "Les espèces données sont inférieures à ce qui reste à payer.");
     $("#pOk").disabled = true;
-    const corps = { id: crypto.randomUUID(), date: new Date().toISOString(),
-      lignes: CART.map((l) => ({ ref: l.ref, qte: l.qte, remise: l.remise || null })), remiseTicket: REM_TICKET,
-      paiement: { mode, recu: $("#recu")?.value || null, cb: mix ? $("#pCb").value : null } };
-    let v;
-    try { v = await api("/caisse/ventes", { method: "POST", body: corps }); }
-    catch (e) {
-      if (!(e instanceof TypeError) && navigator.onLine) { msg($("#pmsg"), e.message); $("#pOk").disabled = false; return; }
-      v = venteLocale(corps, P); ajouterFile(corps);
-    }
-    CART = []; REM_TICKET = null; renderCart(); if (!v.horsLigneLocal) loadProds();
-    showTicket(v);
+    encaisser(mode, P, { recu: $("#recu")?.value || null, cb: mix ? $("#pCb").value : null }, (t) => { msg($("#pmsg"), t); $("#pOk").disabled = false; });
   };
+}
+async function encaisser(mode, P, extra, onErr = (t) => alert(t)) {
+  const corps = { id: crypto.randomUUID(), date: new Date().toISOString(), vendeur: VENDEUR()?.initiales || "",
+    lignes: CART.map((l) => (l.cadeau ? { ref: "CADEAU", montant: (l.prix / 100).toFixed(2) } : { ref: l.ref, qte: l.qte, remise: l.remise || null })), remiseTicket: REM_TICKET,
+    paiement: { mode, recu: extra.recu || null, cb: extra.cb || null, bon: BON?.code || null } };
+  let v;
+  try { v = await api("/caisse/ventes", { method: "POST", body: corps }); }
+  catch (e) {
+    if (!(e instanceof TypeError) && navigator.onLine) return onErr(e.message);
+    if (BON || CART.some((l) => l.cadeau)) return onErr("Pas de connexion internet : les bons d'achat et cartes cadeaux ne sont pas disponibles hors connexion.");
+    v = venteLocale(corps, P); ajouterFile(corps);
+  }
+  CART = []; REM_TICKET = null; BON = null; renderCart(); if (!v.horsLigneLocal) loadProds();
+  showTicket(v);
 }
 // ---- Mode hors connexion : les ventes sont gardées sur l'appareil puis envoyées dès le retour d'internet ----
 function venteLocale(corps, P) {
@@ -431,7 +468,7 @@ function venteLocale(corps, P) {
   const toC = (x) => Math.round(parseFloat(String(x || "0").replace(",", ".")) * 100) || 0;
   const paiement = { mode, recu: corps.paiement.recu ? toC(corps.paiement.recu) : null };
   if (mode === "Mixte") { paiement.cb = toC(corps.paiement.cb); paiement.especes = total - paiement.cb; }
-  return { id: corps.id, numero: "HL-" + corps.id.slice(0, 6).toUpperCase(), date: corps.date, total, paiement, annulee: false, horsLigneLocal: true,
+  return { id: corps.id, numero: "HL-" + corps.id.slice(0, 6).toUpperCase(), date: corps.date, total, paiement, annulee: false, horsLigneLocal: true, vendeur: VENDEUR(),
     lignes: P.lignes.map((l) => ({ ref: l.ref, nom: l.nom, artisanNom: l.artisanNom, qte: l.qte, pu: l.prix, total: l.total })) };
 }
 const lireFile = () => JSON.parse(localStorage.getItem("fileVentes") || "[]");
@@ -442,7 +479,7 @@ async function synchroniser() {
   let f = lireFile(); if (!f.length) return majBandeauHorsLigne();
   SYNC_EN_COURS = true;
   try {
-    while (f.length) { await api("/caisse/ventes", { method: "POST", body: f[0] }); f = lireFile().slice(1); localStorage.setItem("fileVentes", JSON.stringify(f)); }
+    while (f.length) { await api("/caisse/ventes", { method: "POST", body: { ...f[0], sync: true } }); f = lireFile().slice(1); localStorage.setItem("fileVentes", JSON.stringify(f)); }
     if ($("#results")) loadProds();
   } catch {} finally { SYNC_EN_COURS = false; majBandeauHorsLigne(); }
 }
@@ -462,27 +499,104 @@ function ticketHTML(v) {
   return `<div id="ticket">
     <div class="c"><b>${esc(s.nomBoutique)}</b>${s.adresse ? "<br>" + esc(s.adresse) : ""}</div>
     <div class="c">${fdate(v.date)} · Ticket ${esc(v.numero)}</div>
+    ${v.vendeur?.nom ? `<div class="c">Vendeur : ${esc(v.vendeur.nom)}</div>` : ""}
+    ${v.type === "retour" ? `<div class="c"><b>*** TICKET DE RETOUR ***</b><br>sur le ticket ${esc(v.origine?.numero || "")}</div>` : ""}
     ${v.annulee ? '<div class="c"><b>*** VENTE ANNULÉE ***</b></div>' : ""}
     <hr>
     ${v.lignes.map((l) => `<div>${esc(l.nom)}</div>
       <div class="l"><span>${l.qte} x ${eur(l.pu)}${l.remise ? ` (remise −${esc(l.remise.valeur)}${l.remise.type === "%" ? " %" : " €"})` : ""}</span><span>${eur(l.total)}</span></div>
-      <div style="font-size:11px">Réf. ${esc(l.ref)} – vendu pour le compte de ${esc(l.artisanNom)}</div>`).join("<div style='height:4px'></div>")}
+      <div style="font-size:11px">${l.ref === "CADEAU" ? "Code " + esc(l.code || "attribué à la synchronisation") + " – valable 1 an" : `Réf. ${esc(l.ref)} – ${v.type === "retour" ? "repris" : "vendu"} pour le compte de ${esc(l.artisanNom)}`}</div>`).join("<div style='height:4px'></div>")}
     <hr>
     ${v.remiseTicket ? `<div class="l"><span>Remise sur le ticket (−${esc(v.remiseTicket.valeur)}${v.remiseTicket.type === "%" ? " %" : " €"})</span><span>−${eur(v.remiseTicket.montant)}</span></div>` : ""}
     <div class="l"><b>TOTAL</b><b>${eur(v.total)}</b></div>
-    ${v.paiement.mode === "Mixte" ? `<div class="l"><span>Carte</span><span>${eur(v.paiement.cb)}</span></div><div class="l"><span>Espèces</span><span>${eur(v.paiement.especes)}</span></div>` : `<div class="l"><span>Payé par ${esc(v.paiement.mode === "CB" ? "carte" : v.paiement.mode)}</span><span></span></div>`}
+    ${v.paiement.bon ? `<div class="l"><span>${v.paiement.bon.type === "avoir" ? "Avoir" : "Carte cadeau"} ${esc(v.paiement.bon.code)}</span><span>${eur(v.paiement.bon.montant)}</span></div>` : ""}
+    ${v.paiement.mode === "Avoir émis" ? `<div class="l"><span>Remboursé par avoir ${esc(v.paiement.avoir || "")}</span><span>${eur(-v.total)}</span></div>`
+      : v.paiement.mode === "Bon" ? "" : v.type === "retour" ? `<div class="l"><span>Remboursé en ${esc(v.paiement.mode === "CB" ? "carte" : v.paiement.mode)}</span><span>${eur(-v.total)}</span></div>`
+      : v.paiement.mode === "Mixte" ? `<div class="l"><span>Carte</span><span>${eur(v.paiement.cb)}</span></div><div class="l"><span>Espèces</span><span>${eur(v.paiement.especes)}</span></div>` : `<div class="l"><span>Payé par ${esc(v.paiement.mode === "CB" ? "carte" : v.paiement.mode)}</span><span>${v.paiement.bon ? eur(v.total - v.paiement.bon.montant) : ""}</span></div>`}
     ${v.paiement.recu ? `<div class="l"><span>Espèces reçues</span><span>${eur(v.paiement.recu)}</span></div><div class="l"><span>Rendu</span><span>${eur(renduDe(v))}</span></div>` : ""}
-    ${v.horsLigneLocal ? `<div class="c" style="font-size:11px">Ticket enregistré hors connexion</div>` : ""}
+    ${v.horsLigneLocal ? `<div class="c" style="font-size:11px">Ticket enregistré hors connexion</div>` : `<div class="c" style="margin-top:6px"><div style="width:60mm;height:12mm;margin:0 auto">${barcodeSVG(v.numero)}</div><div style="font-size:10px">Gardez ce ticket pour tout échange</div></div>`}
     <hr>
     <div class="c" style="font-size:11px">Articles vendus au nom et pour le compte des artisans et producteurs indiqués.<br>Merci de votre visite !</div>
   </div>`;
 }
-const renduDe = (v) => v.paiement.recu - (v.paiement.mode === "Mixte" ? v.paiement.especes : v.total);
+const renduDe = (v) => v.paiement.recu - (v.paiement.mode === "Mixte" ? v.paiement.especes : v.total - (v.paiement.bon?.montant || 0));
 function showTicket(v) {
-  openModal(`${v.paiement.recu && !v.annulee ? `<div class="rendu" style="margin-bottom:12px">À rendre : ${eur(renduDe(v))}</div>` : ""}${ticketHTML(v)}<div class="row" style="margin-top:14px"><button class="btn ghost" id="tClose">Fermer</button><button class="btn" id="tPrint">Imprimer le ticket</button></div>`);
+  const exp = (d) => { const x = new Date(d); x.setFullYear(x.getFullYear() + 1); return ymd(x); };
+  const cartes = v.lignes.filter((l) => l.ref === "CADEAU" && l.code).map((l) => bonHTML({ code: l.code, type: "carte cadeau", solde: l.total, expire: exp(v.date) })).join("");
+  openModal(`${v.paiement.recu && !v.annulee ? `<div class="rendu" style="margin-bottom:12px">À rendre : ${eur(renduDe(v))}</div>` : ""}${ticketHTML(v)}${cartes}<div class="row" style="margin-top:14px"><button class="btn ghost" id="tClose">Fermer</button><button class="btn" id="tPrint">Imprimer le ticket</button></div>`);
   $("#tClose").onclick = () => { closeModal(); $("#scan")?.focus(); };
   $("#tPrint").onclick = () => { $("#modal").classList.add("print-zone"); window.print(); $("#modal").classList.remove("print-zone"); };
 }
+// ================== PERSONNE EN CAISSE ==================
+// L'artisan d'accueil s'identifie par ses initiales ; on redemande à chaque demi-journée.
+const cleCreneau = () => { const d = new Date(); return ymd(d) + (d.getHours() < 14 ? "-matin" : "-aprem"); };
+function VENDEUR() {
+  if (estGerant()) return { initiales: "GÉR", nom: "Gérance" };
+  try { const v = JSON.parse(localStorage.getItem("vendeurCaisse") || "null"); return v && v.cle === cleCreneau() ? v : null; } catch { return null; }
+}
+function afficherVendeur() {
+  const el = $("#cVendeur"); if (!el) return;
+  const v = VENDEUR();
+  el.innerHTML = `<div class="row" style="align-items:center;margin:6px 0"><span>En caisse : <b>${v ? esc(v.nom) + (estGerant() ? "" : " (" + esc(v.initiales) + ")") : '<span style="color:var(--rouge)">personne</span>'}</b></span>${estGerant() ? "" : `<button class="btn small ghost" id="cChgV" style="flex:0 0 auto">${v ? "Changer" : "Je prends la caisse"}</button>`}</div>`;
+  if ($("#cChgV")) $("#cChgV").onclick = () => choisirVendeur();
+}
+function choisirVendeur(ensuite) {
+  openModal(`<h2>Qui est en caisse ?</h2><p class="muted">Tapez vos initiales. Elles apparaîtront sur les tickets et le ticket Z.</p>
+    <input id="vIni" maxlength="4" style="text-transform:uppercase;font-size:22px" autofocus><div id="vmsg"></div>
+    <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="vGo">Valider</button></div>`);
+  const go = async () => {
+    try { const a = await api("/caisse/vendeur?initiales=" + encodeURIComponent($("#vIni").value.trim()));
+      localStorage.setItem("vendeurCaisse", JSON.stringify({ ...a, cle: cleCreneau() })); closeModal(); afficherVendeur(); ensuite && ensuite(); }
+    catch (e) { msg($("#vmsg"), e.message); }
+  };
+  $("#vGo").onclick = go; $("#vIni").onkeydown = (e) => { if (e.key === "Enter") go(); };
+  setTimeout(() => $("#vIni")?.focus(), 50);
+}
+
+// ================== RETOURS, ÉCHANGES, BONS D'ACHAT ==================
+function retourClient() {
+  openModal(`<h2>Retour / échange</h2><p class="muted">Scannez le code-barres du ticket du client, ou tapez son numéro.</p>
+    <input id="rNum" placeholder="ex. 20270115-12345" style="font-size:18px" autofocus><div id="rmsg"></div>
+    <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Fermer</button><button class="btn" id="rFind">Rechercher le ticket</button></div>`);
+  const find = async () => {
+    try { const v = await api("/caisse/ticket?numero=" + encodeURIComponent($("#rNum").value.trim())); retourLignes(v); }
+    catch (e) { msg($("#rmsg"), e.message); }
+  };
+  $("#rFind").onclick = find; $("#rNum").onkeydown = (e) => { if (e.key === "Enter") find(); };
+  setTimeout(() => $("#rNum")?.focus(), 50);
+}
+function retourLignes(v) {
+  if (v.annulee) return msg($("#rmsg"), "Ce ticket est annulé.");
+  if (v.type === "retour") return msg($("#rmsg"), "C'est un ticket de retour.");
+  const dispo = (l) => (l.ref === "CADEAU" || l.artisanId === "boutique" ? 0 : l.qte - (l.retourne || 0));
+  openModal(`<h2>Retour sur le ticket ${esc(v.numero)}</h2><p class="muted">Vendu le ${fdate(v.date)} · ${eur(v.total)}</p>
+    <table>${v.lignes.map((l, i) => `<tr><td>${esc(l.nom)}<div class="muted">${esc(l.artisanNom)} · ${l.qte} × ${eur(l.total / l.qte)}${l.retourne ? ` · déjà repris : ${l.retourne}` : ""}</div></td>
+      <td style="width:80px">${dispo(l) > 0 ? `<input type="number" min="0" max="${dispo(l)}" value="0" data-rq="${i}">` : '<span class="muted">—</span>'}</td></tr>`).join("")}</table>
+    <label>Remboursement</label><select id="rMode"><option value="avoir">Avoir (bon d'achat valable 1 an) – pour un échange</option><option value="CB">Remboursement sur la carte</option><option value="Espèces">Remboursement en espèces</option></select>
+    ${estGerant() ? "" : `<label>Votre nom *</label><input id="rPar" value="${esc(VENDEUR()?.nom || "")}">`}
+    <label>Motif ${estGerant() ? "" : "*"}</label><input id="rMot" placeholder="ex. produit défectueux, échange de taille…">
+    <div id="rmsg"></div><div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn danger" id="rGo">Valider le retour</button></div>`);
+  $("#rGo").onclick = async () => {
+    const lignes = [...document.querySelectorAll("[data-rq]")].map((i) => ({ index: +i.dataset.rq, qte: parseInt(i.value, 10) || 0 })).filter((x) => x.qte > 0);
+    if (!lignes.length) return msg($("#rmsg"), "Indiquez la quantité reprise.");
+    try {
+      const r = await api("/caisse/retour", { method: "POST", body: { mois: v.date.slice(0, 7), id: v.id, lignes, remboursement: $("#rMode").value, motif: $("#rMot").value, par: $("#rPar")?.value || "" } });
+      loadProds();
+      openModal(`${r.bon ? `<div class="rendu">Avoir de ${eur(r.bon.solde)}</div>` : `<div class="rendu">À rembourser ${r.paiement.mode === "CB" ? "sur la carte" : "en espèces"} : ${eur(-r.total)}</div>`}
+        ${ticketHTML(r)}${r.bon ? bonHTML(r.bon) : ""}
+        <div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeModal()">Fermer</button><button class="btn ghost" id="rPr">Imprimer</button>${r.bon ? `<button class="btn" id="rEch">Échange : utiliser l'avoir maintenant</button>` : ""}</div>`);
+      $("#rPr").onclick = () => { $("#modal").classList.add("print-zone"); window.print(); $("#modal").classList.remove("print-zone"); };
+      if ($("#rEch")) $("#rEch").onclick = () => { BON = r.bon; closeModal(); renderCart(); $("#scan").focus(); };
+    } catch (e) { msg($("#rmsg"), e.message); }
+  };
+}
+function bonHTML(b) {
+  return `<div id="ticket" style="margin-top:10px;border-top:1px dashed #000;padding-top:8px"><div class="c"><b>${esc(S.settings.nomBoutique)}</b></div>
+    <div class="c" style="font-size:16px;margin:6px 0"><b>${b.type === "avoir" ? "AVOIR" : "CARTE CADEAU"} : ${eur(b.solde)}</b></div>
+    <div style="width:60mm;height:12mm;margin:0 auto">${barcodeSVG(b.code)}</div><div class="c">${esc(b.code)}</div>
+    <div class="c" style="font-size:11px">Valable jusqu'au ${fd(b.expire)}, en une ou plusieurs fois. Non remboursable en espèces.</div></div>`;
+}
+
 // ================== TIROIR-CAISSE ==================
 const COUPURES = [500, 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01];
 const coupLabel = (v) => v >= 5 ? `Billet ${v} €` : v >= 1 ? `Pièce ${v} €` : `Pièce ${Math.round(v * 100)} c`;
@@ -520,7 +634,7 @@ async function loadSession() {
 function ouvertureCaisse() {
   const fond = SESSION?.fondReserve ?? 8000;
   openModal(`<h2>Ouverture de caisse</h2><p class="muted">Comptez le tiroir. Le fond de caisse attendu est de <b>${eur(fond)}</b>.</p>
-    <label>Votre nom</label><input id="oVend" placeholder="Qui ouvre la caisse ?">
+    <label>Votre nom</label><input id="oVend" placeholder="Qui ouvre la caisse ?" value="${esc(VENDEUR()?.nom || "")}">
     ${comptageHTML("oCpt")}<div id="oEcart"></div><div id="omsg"></div>
     <div class="row"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="oGo">Valider l'ouverture</button></div>`);
   const read = bindComptage("oCpt", (t) => {
@@ -545,7 +659,7 @@ function sortieEspeces() {
 async function clotureCaisse() {
   let z;
   try { z = await api("/caisse/z/apercu", { method: "POST", body: { comptage: {} } }); } catch (e) { return msg($("#cmsg"), e.message); }
-  const modes = Object.entries(z.parMode).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><b style="text-align:right">${eur(v)}</b></div>`).join("") || `<p class="muted">Aucune vente aujourd'hui.</p>`;
+  const modes = Object.entries(z.parMode).map(([k, v]) => `<div class="row"><span>${esc(libMode(k))}</span><b style="text-align:right">${eur(v)}</b></div>`).join("") || `<p class="muted">Aucune vente aujourd'hui.</p>`;
   openModal(`<h2>Clôture de caisse</h2>
     ${z.ouvertureValidee ? "" : `<div class="msg err">L'ouverture n'a pas été validée ce matin : le fond est compté à ${eur(z.fondOuverture)}.</div>`}
     <div class="kpis"><div class="kpi"><div class="l">CA du jour</div><div class="v">${eur(z.ca)}</div></div><div class="kpi"><div class="l">Tickets</div><div class="v">${z.nbVentes}</div></div></div>
@@ -556,7 +670,7 @@ async function clotureCaisse() {
     ${z.sorties.map((x) => `<div class="row"><span>− Sortie : ${esc(x.motif)}</span><b style="text-align:right;color:var(--rouge)">−${eur(x.montant)}</b></div>`).join("")}
     <div class="row"><span><b>= Attendu</b></span><b style="text-align:right">${eur(z.attendu)}</b></div>
     <h3>Comptez le tiroir</h3>
-    <label>Votre nom</label><input id="fVend" placeholder="Qui clôture la caisse ?">
+    <label>Votre nom</label><input id="fVend" placeholder="Qui clôture la caisse ?" value="${esc(VENDEUR()?.nom || "")}">
     ${comptageHTML("fCpt")}<div id="fRes"></div>
     <label>Note (facultatif)</label><input id="fNote">
     <div id="fmsg"></div>
@@ -588,10 +702,15 @@ function printZ(z) {
     <h2>Ventes</h2><table>
       ${L("Nombre de clients (tickets)", z.nbVentes, "b")}${L("Articles vendus", z.articles)}${L("Panier moyen", eur(z.panierMoyen))}
       ${L("CHIFFRE D'AFFAIRES TTC", eur(z.ca), "t")}
+      ${z.retours?.nb ? L(`Retours clients (${z.retours.nb}, déjà déduits)`, "−" + eur(z.retours.montant)) : ""}
       ${z.annulations.nb ? L(`Ventes annulées (${z.annulations.nb})`, eur(z.annulations.montant)) : ""}</table>
     <h2>Encaissements</h2><table>
       ${L("Carte bancaire", eur(z.parMode["CB"] || 0), "b")}${L("Espèces", eur(z.parMode["Espèces"] || 0), "b")}
-      ${L("TOTAL ENCAISSÉ", eur(z.ca), "t")}</table>
+      ${L("TOTAL ENCAISSÉ", eur(z.encaisse ?? z.ca), "t")}
+      ${z.parMode["Bon d'achat"] ? L("Payé avec bons, avoirs, cartes cadeaux", eur(z.parMode["Bon d'achat"])) : ""}
+      ${z.parMode["Avoir émis"] ? L("Avoirs émis (retours)", eur(-z.parMode["Avoir émis"])) : ""}
+      ${z.cartesVendues ? L("Cartes cadeaux vendues (hors CA)", eur(z.cartesVendues)) : ""}</table>
+    ${(z.parVendeur || []).length ? `<h2>Par personne en caisse</h2><table>${z.parVendeur.map((x) => L(esc(x.nom) + ` (${x.tickets} tickets)`, eur(x.ca))).join("")}</table>` : ""}
     <h2>Fond de caisse</h2><table>
       ${L("Fond d'ouverture" + (z.ouvertureValidee ? "" : " (non compté)"), eur(z.fondOuverture))}
       ${L("Espèces encaissées", eur(z.especes))}
@@ -616,10 +735,10 @@ async function venteDuJour() {
     const d = await api("/caisse/jour");
     openModal(`<h2>Ventes du ${new Date().toLocaleDateString("fr-FR")}</h2>
       <div class="kpis"><div class="kpi"><div class="l">Total</div><div class="v">${eur(d.total)}</div></div><div class="kpi"><div class="l">Tickets</div><div class="v">${d.nbVentes}</div></div></div>
-      ${Object.entries(d.parMode).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><b style="text-align:right">${eur(v)}</b></div>`).join("")}
+      ${Object.entries(d.parMode).map(([k, v]) => `<div class="row"><span>${esc(libMode(k))}</span><b style="text-align:right">${eur(v)}</b></div>`).join("")}
       <h3>Tickets</h3>
-      <table>${d.ventes.map((v, i) => `<tr><td>${new Date(v.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}<div class="muted">${v.lignes.map((l) => l.qte + " × " + esc(l.nom)).join("<br>")}</div></td><td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td>
-        <td class="num"><button class="btn small ghost" data-tk="${i}">Ticket</button>${v.annulee ? "" : ` <button class="btn small ghost" data-al="${i}">Annuler une ligne</button> <button class="btn small danger" data-at="${i}">Annuler le ticket</button>`}</td></tr>`).join("") || "<tr><td>Aucune vente</td></tr>"}</table>
+      <table>${d.ventes.map((v, i) => `<tr><td>${new Date(v.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}<div class="muted">${v.lignes.map((l) => l.qte + " × " + esc(l.nom)).join("<br>")}</div></td><td>${esc(v.paiement.mode)}${v.type === "retour" ? ' <span class="tag">retour</span>' : ""}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}<div class="muted">${esc(v.vendeur?.nom || "")}</div></td><td class="num">${eur(v.total)}</td>
+        <td class="num"><button class="btn small ghost" data-tk="${i}">Ticket</button>${v.annulee ? "" : `${v.type === "retour" ? "" : ` <button class="btn small ghost" data-al="${i}">Annuler une ligne</button>`} <button class="btn small danger" data-at="${i}">Annuler le ticket</button>`}</td></tr>`).join("") || "<tr><td>Aucune vente</td></tr>"}</table>
       <button class="btn ghost" style="margin-top:12px" onclick="closeModal()">Fermer</button>`);
     const annuler = (v, ligne, titre, detail) => justifier(titre, { detail }, () => venteDuJour(),
       (motif, par) => api(`/caisse/ventes/${v.date.slice(0, 7)}/${v.id}/annuler`, { method: "POST", body: { ligne, motif, par } }));
@@ -707,7 +826,8 @@ async function imprimerReleve(mois, artisanId) {
       ${r.totalPenalites ? `<tr><td>Pénalités</td><td class="n">−${eur(r.totalPenalites)}</td></tr>` : ""}
       ${r.supplement ? `<tr><td>Supplément formule sans participation à l'accueil</td><td class="n">−${eur(r.supplement)}</td></tr>` : ""}
       ${r.report ? `<tr><td>Reste dû du mois précédent (reporté)</td><td class="n">−${eur(r.report)}</td></tr>` : ""}
-      <tr class="tot"><td>${r.aReverser >= 0 ? "Montant reversé" : "Reste dû à la boutique (reporté sur le mois suivant)"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
+      <tr class="tot"><td>${r.aReverser >= 0 ? "Montant à reverser" : "Reste dû à la boutique (reporté sur le mois suivant)"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
+    ${r.reversement ? `<p><b>Virement effectué le ${fd(r.reversement.date)} : ${eur(r.reversement.montant)}</b></p>` : r.aReverser > 0 ? `<p>Virement à venir, au plus tard le 10 du mois suivant.</p>` : ""}
     <p style="font-size:11px">Loyer de base du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer - (r.supplement || 0))} par mois, réglé à l'avance selon le contrat${r.supplement ? ` ; le supplément de ${eur(r.supplement)} de la formule sans participation est facturé ci-dessus et déduit des ventes du mois` : ""}.</p>
 
     <h2 class="page2">Détail des ventes</h2>
@@ -721,10 +841,11 @@ async function imprimerReleve(mois, artisanId) {
 function exporterCompta(du, au) {
   api(`/export?du=${du}&au=${au}`).then((V) => {
     const n = (c) => ((c || 0) / 100).toFixed(2).replace(".", ",");
-    const rows = [["Date", "Heure", "Ticket", "Statut", "Paiement", "Part CB", "Part espèces", "Artisan", "Référence", "Article", "Quantité", "Prix unitaire", "Remise", "Total ligne"]];
+    const rows = [["Date", "Heure", "Ticket", "Type", "Statut", "Personne en caisse", "Paiement", "Part CB", "Part espèces", "Part bon/avoir", "Code bon", "Artisan", "Référence", "Article", "Quantité", "Prix unitaire", "Remise", "Total ligne"]];
     for (const v of V) {
-      const d = new Date(v.date), cb = v.paiement.mode === "Mixte" ? v.paiement.cb : v.paiement.mode === "CB" ? v.total : 0, es = v.paiement.mode === "Mixte" ? v.paiement.especes : v.paiement.mode === "Espèces" ? v.total : 0;
-      for (const l of v.lignes) rows.push([d.toLocaleDateString("fr-FR"), d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }), v.numero, v.annulee ? "Annulée" : "Valide", v.paiement.mode, n(cb), n(es), l.artisanNom, l.ref, l.nom, l.qte, n(l.pu), n((l.remise?.montant || 0) + (l.remiseTicket || 0)), n(l.total)]);
+      const p = v.paiement, bon = p.bon?.montant || 0, reste = v.total - bon;
+      const d = new Date(v.date), cb = p.mode === "Mixte" ? p.cb : p.mode === "CB" ? reste : 0, es = p.mode === "Mixte" ? p.especes : p.mode === "Espèces" ? reste : 0;
+      for (const l of v.lignes) rows.push([d.toLocaleDateString("fr-FR"), d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }), v.numero, v.type === "retour" ? "Retour" : l.ref === "CADEAU" ? "Carte cadeau" : "Vente", v.annulee ? "Annulée" : "Valide", v.vendeur?.nom || "", p.mode, n(cb), n(es), n(p.mode === "Avoir émis" ? v.total : bon), p.bon?.code || p.avoir || l.code || "", l.artisanNom, l.ref, l.nom, l.qte, n(l.pu), n((l.remise?.montant || 0) + (l.remiseTicket || 0)), n(l.total)]);
     }
     const csv = "﻿" + rows.map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = `export-ventes-${du}-au-${au}.csv`; a.click();
@@ -733,35 +854,37 @@ function exporterCompta(du, au) {
 
 // ================== ESPACE ARTISAN ==================
 async function artisanCatalogue() {
-  app.innerHTML = `<div class="grid2">
+  app.innerHTML = `<div id="alertesArt"></div><div class="grid2">
     <div class="card"><h2 id="fTitle">Ajouter un article</h2>
       <p class="muted">La référence est créée automatiquement avec vos initiales.</p>
       <label>Nom de l'article *</label><input id="fNom">
       <div class="row"><div><label>Prix de vente TTC (€) *</label><input id="fPrix" inputmode="decimal"></div>
       <div><label>Stock (vide = non suivi)</label><input id="fStock" inputmode="numeric"></div></div>
+      <div class="row"><div><label>Alerte stock bas à partir de</label><input id="fSeuil" inputmode="numeric" placeholder="ex. 2"></div>
+      <div><label>Date limite (DLC/DDM, produits alimentaires)</label><input id="fDlc" type="date"></div></div>
       <label>Catégorie</label><input id="fCat" placeholder="ex. bijoux, miel, bougies…">
       <label>Description</label><textarea id="fDesc"></textarea>
       <div id="fmsg"></div>
       <div class="row" style="margin-top:10px"><button class="btn ghost hidden" id="fCancel">Annuler la modification</button><button class="btn" id="fSave">Enregistrer l'article</button></div>
     </div>
-    <div class="card"><div class="row" style="align-items:center"><h2 style="margin:0">Mes articles</h2><button class="btn small osb" id="labelsBtn" style="flex:0 0 auto">Imprimer des étiquettes</button></div>
+    <div class="card"><div class="row" style="align-items:center"><h2 style="margin:0">Mes articles</h2><button class="btn small ghost" id="invBtn" style="flex:0 0 auto">Faire mon inventaire</button><button class="btn small osb" id="labelsBtn" style="flex:0 0 auto">Imprimer des étiquettes</button></div>
       <input id="fSearch" placeholder="Rechercher" style="margin-top:10px">
       <div id="plist" style="margin-top:8px"></div></div>
   </div>`;
   let PR = [], editing = null;
-  const reset = () => { editing = null; ["fNom", "fPrix", "fStock", "fCat", "fDesc"].forEach((i) => ($("#" + i).value = "")); $("#fTitle").textContent = "Ajouter un article"; $("#fCancel").classList.add("hidden"); };
-  const load = async () => { PR = await api("/produits"); render(); };
+  const reset = () => { editing = null; ["fNom", "fPrix", "fStock", "fCat", "fDesc", "fSeuil", "fDlc"].forEach((i) => ($("#" + i).value = "")); $("#fTitle").textContent = "Ajouter un article"; $("#fCancel").classList.add("hidden"); };
+  const load = async () => { PR = await api("/produits"); render(); api("/alertes").then((a) => ($("#alertesArt").innerHTML = alertesHTML(a, false))).catch(() => {}); };
   const render = () => {
     const q = $("#fSearch").value.toLowerCase();
     const list = PR.filter((p) => !q || p.nom.toLowerCase().includes(q) || p.ref.toLowerCase().includes(q));
     $("#plist").innerHTML = `<table><tr><th>Réf.</th><th>Article</th><th class="num">Prix</th><th class="num">Stock</th><th></th></tr>
       ${list.map((p) => `<tr><td><b>${esc(p.ref)}</b></td><td>${esc(p.nom)}${p.actif === false ? ' <span class="tag off">retiré</span>' : ""}<div class="muted">${esc(p.categorie)}</div></td>
-        <td class="num">${eur(p.prix)}</td><td class="num">${p.stock ?? "–"}</td>
+        <td class="num">${eur(p.prix)}</td><td class="num">${p.stock ?? "–"}${p.dlc ? `<div class="muted">DLC ${fd(p.dlc)}</div>` : ""}</td>
         <td class="num"><button class="btn small ghost" data-e="${esc(p.ref)}">Modifier</button>
         ${p.actif === false ? `<button class="btn small" data-on="${esc(p.ref)}">Remettre</button>` : `<button class="btn small ghost" data-off="${esc(p.ref)}">Retirer</button>`}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Aucun article pour l'instant.</td></tr>`}</table>`;
     $("#plist").querySelectorAll("[data-e]").forEach((b) => (b.onclick = () => {
       const p = PR.find((x) => x.ref === b.dataset.e); editing = p.ref;
-      $("#fNom").value = p.nom; $("#fPrix").value = (p.prix / 100).toFixed(2).replace(".", ","); $("#fStock").value = p.stock ?? ""; $("#fCat").value = p.categorie || ""; $("#fDesc").value = p.description || "";
+      $("#fNom").value = p.nom; $("#fPrix").value = (p.prix / 100).toFixed(2).replace(".", ","); $("#fStock").value = p.stock ?? ""; $("#fCat").value = p.categorie || ""; $("#fDesc").value = p.description || ""; $("#fSeuil").value = p.seuil ?? ""; $("#fDlc").value = p.dlc || "";
       $("#fTitle").textContent = "Modifier " + p.ref; $("#fCancel").classList.remove("hidden"); window.scrollTo(0, 0);
     }));
     $("#plist").querySelectorAll("[data-off]").forEach((b) => (b.onclick = async () => { await api("/produits/" + b.dataset.off, { method: "PUT", body: { actif: false } }); load(); }));
@@ -770,14 +893,38 @@ async function artisanCatalogue() {
   $("#fSearch").oninput = render;
   $("#fCancel").onclick = reset;
   $("#fSave").onclick = async () => {
-    const body = { nom: $("#fNom").value, prix: $("#fPrix").value, stock: $("#fStock").value, categorie: $("#fCat").value, description: $("#fDesc").value };
+    const body = { nom: $("#fNom").value, prix: $("#fPrix").value, stock: $("#fStock").value, categorie: $("#fCat").value, description: $("#fDesc").value, seuil: $("#fSeuil").value, dlc: $("#fDlc").value };
     try {
       const p = editing ? await api("/produits/" + editing, { method: "PUT", body }) : await api("/produits", { method: "POST", body });
       msg($("#fmsg"), (editing ? "Article modifié : " : "Article créé avec la référence ") + p.ref, "ok"); reset(); load();
     } catch (e) { msg($("#fmsg"), e.message); }
   };
   $("#labelsBtn").onclick = () => printLabels(PR.filter((p) => p.actif !== false).map((p) => ({ ...p, artisanNom: S.nom })));
+  $("#invBtn").onclick = () => faireInventaire(PR.filter((p) => p.actif !== false), null, load);
   load();
+}
+function alertesHTML(A, avecArtisan) {
+  if (!A.length) return "";
+  return `<div class="card" style="border-color:var(--osb)"><h2>À surveiller (${A.length})</h2><table>${A.map((a) => `<tr><td><b>${esc(a.ref)}</b> ${esc(a.nom)}${avecArtisan ? `<div class="muted">${esc(a.artisanNom)}</div>` : ""}</td><td><span class="tag ${a.niveau > 1 ? "off" : ""}">${esc(a.alerte)}</span>${a.dlc ? `<div class="muted">DLC ${fd(a.dlc)}</div>` : ""}</td></tr>`).join("")}</table></div>`;
+}
+// Inventaire : on compte le stock réel, les écarts (produits manquants) sont enregistrés comme démarque
+function faireInventaire(prods, artisanId, done) {
+  openModal(`<h2>Inventaire</h2><p class="muted">Comptez vos produits en boutique et indiquez la quantité réelle. Laissez vide les articles non comptés. Le stock sera corrigé et les écarts enregistrés.</p>
+    <div style="max-height:50vh;overflow:auto"><table><tr><th>Article</th><th class="num">Stock prévu</th><th>Compté</th></tr>
+    ${prods.map((p) => `<tr><td><b>${esc(p.ref)}</b> ${esc(p.nom)}</td><td class="num">${p.stock ?? "–"}</td><td style="width:90px"><input type="number" min="0" data-inv="${esc(p.ref)}"></td></tr>`).join("") || "<tr><td class='muted'>Aucun article.</td></tr>"}</table></div>
+    <div id="invmsg"></div><div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="invGo">Enregistrer l'inventaire</button></div>`);
+  $("#modalBox").style.maxWidth = "640px";
+  $("#invGo").onclick = async () => {
+    const lignes = [...document.querySelectorAll("[data-inv]")].filter((i) => i.value !== "").map((i) => ({ ref: i.dataset.inv, compte: i.value }));
+    try {
+      const inv = await api("/inventaire", { method: "POST", body: { artisanId, lignes } });
+      const ec = inv.lignes.filter((l) => l.ecart);
+      openModal(`<h2>Inventaire enregistré</h2>${ec.length ? `<table><tr><th>Article</th><th class="num">Prévu</th><th class="num">Compté</th><th class="num">Écart</th></tr>${ec.map((l) => `<tr><td>${esc(l.nom)}</td><td class="num">${l.theorique}</td><td class="num">${l.compte}</td><td class="num" style="color:${l.ecart < 0 ? "var(--rouge)" : "inherit"}">${l.ecart > 0 ? "+" : ""}${l.ecart}</td></tr>`).join("")}</table>
+        <p>Produits manquants : <b>${inv.manquants}</b> · valeur : <b>${eur(inv.demarque)}</b></p>` : `<p class="msg ok">Aucun écart, tout est juste.</p>`}
+        <button class="btn" onclick="closeModal()">Fermer</button>`);
+      done && done();
+    } catch (e) { msg($("#invmsg"), e.message); }
+  };
 }
 
 // Étiquettes : même format que Belle&Jolie — planche A4 de 65 étiquettes (5 colonnes × 13 lignes, 38 × 21,2 mm)
@@ -939,7 +1086,7 @@ async function adminDashboard() {
         <div class="kpi"><div class="l">Articles par panier</div><div class="v">${String(d.articlesParPanier).replace(".", ",")}</div></div>
         <div class="kpi"><div class="l">Mes commissions (${d.commissionTaux} %)</div><div class="v">${eur(comm)}</div></div>
         <div class="kpi"><div class="l">À reverser aux artisans</div><div class="v">${eur(d.totalMagasin - comm)}</div></div>
-        ${Object.entries(d.parMode).map(([k, v]) => `<div class="kpi"><div class="l">Payé en ${esc(k)}</div><div class="v">${eur(v)}</div></div>`).join("")}
+        ${Object.entries(d.parMode).map(([k, v]) => `<div class="kpi"><div class="l">${esc(libMode(k))}</div><div class="v">${eur(v)}</div></div>`).join("")}
       </div>
       <div class="kpis">
         <div class="kpi"><div class="l">Meilleur artisan en valeur</div><div class="v" style="font-size:17px">${bestVal ? esc(bestVal.artisanNom) + "<div class='muted'>" + eur(bestVal.ca) + "</div>" : "–"}</div></div>
@@ -987,8 +1134,8 @@ async function adminVentes(cible = app) {
     $("#vl").innerHTML = `<h2>Historique des tickets</h2><table><tr><th>Date</th><th>Articles</th><th>Paiement</th><th class="num">Total</th><th></th></tr>
       ${list.map((v) => { const i = V.indexOf(v); return `<tr><td>${fdate(v.date)}<div class="muted">${esc(v.numero)}</div></td><td>${v.lignes.map((l) => `${l.qte} × ${esc(l.nom)} <span class="muted">(${esc(l.artisanNom)})</span>`).join("<br>") || "<span class='muted'>—</span>"}
         ${(v.historique || []).map((h) => `<div class="muted" style="font-size:12px">↳ ${fdate(h.date)} · ${esc(h.action)}${h.motif ? " · « " + esc(h.motif) + " »" : ""}${h.par ? " · " + esc(h.par) : ""}</div>`).join("")}</td>
-        <td>${esc(v.paiement.mode)}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}</td><td class="num">${eur(v.total)}</td>
-        <td class="num"><button class="btn small ghost" data-t="${i}">Ticket</button>${v.annulee ? "" : ` <button class="btn small ghost" data-m="${i}">Modifier</button> <button class="btn small danger" data-a="${i}">Annuler</button>`}</td></tr>`; }).join("") || `<tr><td colspan="5" class="muted">Aucune vente.</td></tr>`}</table>`;
+        <td>${esc(v.paiement.mode)}${v.type === "retour" ? ' <span class="tag">retour</span>' : ""}${v.annulee ? ' <span class="tag off">annulée</span>' : ""}<div class="muted">${esc(v.vendeur?.nom || "")}</div></td><td class="num">${eur(v.total)}</td>
+        <td class="num"><button class="btn small ghost" data-t="${i}">Ticket</button>${v.annulee ? "" : `${v.type === "retour" || v.paiement.bon || v.lignes.some((l) => l.ref === "CADEAU") ? "" : ` <button class="btn small ghost" data-m="${i}">Modifier</button>`} <button class="btn small danger" data-a="${i}">Annuler</button>`}</td></tr>`; }).join("") || `<tr><td colspan="5" class="muted">Aucune vente.</td></tr>`}</table>`;
     $("#vl").querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => showTicket(V[b.dataset.t])));
     $("#vl").querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => modifierTicket(V[b.dataset.m], load)));
     $("#vl").querySelectorAll("[data-a]").forEach((b) => (b.onclick = async () => {
@@ -1039,7 +1186,7 @@ async function adminArtisans() {
     <div class="card"><h2>Ajouter un artisan</h2>
       <div class="row"><div><label>Nom affiché *</label><input id="aNom" placeholder="ex. Marie Dupont – Bijoux"></div><div style="max-width:120px"><label>Initiales * (2 ou 3 lettres)</label><input id="aIni" maxlength="4" placeholder="MD ou MDU"></div></div>
       <div class="row"><div><label>Identifiant de connexion *</label><input id="aId" placeholder="ex. marie.dupont"></div><div><label>Mot de passe provisoire *</label><input id="aPw"></div></div>
-      <div class="row"><div><label>Métier</label><input id="aMet"></div><div><label>Stand</label><select id="aStand"><option>1 m</option><option>2 m</option></select></div></div>
+      <div class="row"><div><label>Métier</label><input id="aMet"></div><div><label>Catégorie (4 artisans max.)</label><input id="aCat" list="catList" placeholder="bijoux, textile, épicerie…"><datalist id="catList"></datalist></div><div><label>Stand</label><select id="aStand"><option>1 m</option><option>2 m</option></select></div></div>
       <div class="row"><div><label>Date de début du contrat</label><input type="date" id="aDeb"></div><div><label>Formule</label><select id="aForm"><option value="avec accueil">Avec participation à l'accueil</option><option value="sans accueil">Sans participation (loyer + supplément)</option></select></div></div>
       <div class="row"><div><label>Téléphone</label><input id="aTel"></div><div><label>E-mail</label><input id="aMail"></div></div>
       <div id="amsg"></div><button class="btn" id="aGo" style="margin-top:10px">Créer le compte</button>
@@ -1047,8 +1194,10 @@ async function adminArtisans() {
     <div class="card"><h2>Artisans</h2><div id="alist"></div></div></div>`;
   const load = async () => {
     const A = await api("/artisans");
-    $("#alist").innerHTML = `<table><tr><th>Artisan</th><th>Identifiant</th><th>Stand</th><th>Contrat</th><th></th></tr>
-      ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}<div class="muted">${a.formule === "sans accueil" ? "Sans accueil" + (a.formuleDepuis ? " dès le " + fd(a.formuleDepuis) : "") : "Avec accueil"}</div><button class="btn small ghost" data-form="${a.id}" data-v="${a.formule === "sans accueil" ? "avec accueil" : "sans accueil"}">${a.formule === "sans accueil" ? "Repasser avec accueil" : "Passer sans accueil"}</button></td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
+    const cats = {}; A.filter((a) => a.actif && a.categorie).forEach((a) => (cats[a.categorie] = (cats[a.categorie] || 0) + 1));
+    $("#catList").innerHTML = Object.keys(cats).map((c) => `<option value="${esc(c)}">`).join("");
+    $("#alist").innerHTML = (Object.keys(cats).length ? `<p class="muted">Par catégorie : ${Object.entries(cats).map(([c, n]) => `<span class="tag ${n >= 4 ? "off" : ""}">${esc(c)} ${n}/4</span>`).join(" ")}</p>` : "") + `<table><tr><th>Artisan</th><th>Identifiant</th><th>Stand</th><th>Contrat</th><th></th></tr>
+      ${A.map((a) => `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}<div class="muted">${a.categorie ? esc(a.categorie) + " · " : ""}${esc(a.metier)} ${esc(a.telephone)}</div>${a.actif ? "" : '<span class="tag off">désactivé</span>'}</td><td>${esc(a.identifiant)}</td><td>${esc(a.stand)}<div class="muted">${a.formule === "sans accueil" ? "Sans accueil" + (a.formuleDepuis ? " dès le " + fd(a.formuleDepuis) : "") : "Avec accueil"}</div><button class="btn small ghost" data-form="${a.id}" data-v="${a.formule === "sans accueil" ? "avec accueil" : "sans accueil"}">${a.formule === "sans accueil" ? "Repasser avec accueil" : "Passer sans accueil"}</button></td><td>${a.dateDebut ? "Début : " + new Date(a.dateDebut + "T12:00:00").toLocaleDateString("fr-FR") + `<div class="muted">Engagement jusqu'au ${finEngagement(a.dateDebut)}</div>` : `<span class="muted">non renseigné</span>`}<div><button class="btn small ghost" data-deb="${a.id}" data-v="${esc(a.dateDebut || "")}">Modifier la date</button></div></td>
       <td class="num"><button class="btn small osb" data-rel="${a.id}">Relevé / facture</button> <button class="btn small ghost" data-pw="${a.id}">Nouveau mot de passe</button> <button class="btn small ${a.actif ? "ghost" : ""}" data-act="${a.id}" data-v="${a.actif ? 0 : 1}">${a.actif ? "Désactiver" : "Réactiver"}</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">Aucun artisan.</td></tr>`}</table>`;
     $("#alist").querySelectorAll("[data-pw]").forEach((b) => (b.onclick = async () => {
       const pw = prompt("Nouveau mot de passe (6 caractères min.) :"); if (!pw) return;
@@ -1068,12 +1217,78 @@ async function adminArtisans() {
   };
   $("#aGo").onclick = async () => {
     try {
-      const a = await api("/artisans", { method: "POST", body: { nom: $("#aNom").value, initiales: $("#aIni").value, identifiant: $("#aId").value, motdepasse: $("#aPw").value, metier: $("#aMet").value, stand: $("#aStand").value, dateDebut: $("#aDeb").value, formule: $("#aForm").value, telephone: $("#aTel").value, email: $("#aMail").value } });
+      const a = await api("/artisans", { method: "POST", body: { nom: $("#aNom").value, initiales: $("#aIni").value, identifiant: $("#aId").value, motdepasse: $("#aPw").value, metier: $("#aMet").value, stand: $("#aStand").value, categorie: $("#aCat").value, dateDebut: $("#aDeb").value, formule: $("#aForm").value, telephone: $("#aTel").value, email: $("#aMail").value } });
       msg($("#amsg"), `Compte créé : identifiant « ${a.identifiant} », initiales ${a.initiales}.`, "ok");
-      ["aNom", "aIni", "aId", "aPw", "aMet", "aTel", "aMail", "aDeb"].forEach((i) => ($("#" + i).value = "")); load();
-    } catch (e) { msg($("#amsg"), e.message); }
+      ["aNom", "aIni", "aId", "aPw", "aMet", "aCat", "aTel", "aMail", "aDeb"].forEach((i) => ($("#" + i).value = "")); load();
+    } catch (e) {
+      if (/4 maximum/.test(e.message) && confirm(e.message + "\n\nCréer le compte quand même ?")) {
+        try { await api("/artisans", { method: "POST", body: { nom: $("#aNom").value, initiales: $("#aIni").value, identifiant: $("#aId").value, motdepasse: $("#aPw").value, metier: $("#aMet").value, stand: $("#aStand").value, categorie: $("#aCat").value, dateDebut: $("#aDeb").value, formule: $("#aForm").value, telephone: $("#aTel").value, email: $("#aMail").value, forcer: true } }); msg($("#amsg"), "Compte créé.", "ok"); load(); } catch (x) { msg($("#amsg"), x.message); }
+      } else msg($("#amsg"), e.message);
+    }
   };
   load();
+}
+
+// ================== LOYERS, REVERSEMENTS, INVENTAIRES, BONS ==================
+async function adminSuivi() {
+  app.innerHTML = `<div id="suAl"></div>
+    <div class="card"><h2>Loyers payés d'avance</h2><p class="muted">Le loyer est réglé 3 mois à l'avance. En rouge : la période payée se termine dans moins de 15 jours ou est dépassée.</p><div id="suLoy"></div></div>
+    <div class="card"><div class="row" style="align-items:flex-end"><h2 style="margin:0">Reversements aux artisans</h2><div style="max-width:200px"><label>Mois des ventes</label><input type="month" id="suM"></div></div><div id="suRev" style="margin-top:10px"></div></div>
+    <div class="card"><h2>Inventaires et démarque</h2><div class="row"><div><label>Faire l'inventaire d'un artisan</label><select id="suInvA"></select></div><div style="flex:0 0 auto"><button class="btn ghost" id="suInvGo">Commencer</button></div></div><div id="suInv" style="margin-top:10px"></div></div>
+    <div class="card"><h2>Bons d'achat, avoirs et cartes cadeaux</h2><div id="suBon"></div></div>`;
+  const auj = ymd(new Date()), d15 = ymd(new Date(Date.now() + 15 * 864e5));
+  const m0 = new Date(); m0.setMonth(m0.getMonth() - 1); $("#suM").value = ymd(m0).slice(0, 7);
+  api("/alertes").then((a) => ($("#suAl").innerHTML = alertesHTML(a, true))).catch(() => {});
+  const loyers = async () => {
+    const L = await api("/loyers");
+    $("#suLoy").innerHTML = `<table><tr><th>Artisan</th><th>Stand</th><th>Payé jusqu'au</th><th>Paiements</th><th></th></tr>${L.map((a) => {
+      const alerte = !a.couvertJusquau || a.couvertJusquau < d15;
+      return `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}</td><td>${esc(a.stand)} · ${eur(a.loyer)}/mois${a.formule === "sans accueil" ? '<div class="muted">+ supplément sans accueil sur relevé</div>' : ""}</td>
+        <td style="color:${alerte ? "var(--rouge)" : "inherit"};font-weight:600">${a.couvertJusquau ? fd(a.couvertJusquau) : "aucun paiement"}</td>
+        <td>${a.paiements.map((x) => `<div class="muted">${eur(x.montant)} · ${fd(x.du)} → ${fd(x.au)} · ${esc(x.mode)}${x.note ? " · " + esc(x.note) : ""} <button class="btn small ghost" style="padding:0 6px" data-ldel="${a.artisanId}|${x.id}">✕</button></div>`).join("") || '<span class="muted">—</span>'}</td>
+        <td class="num"><button class="btn small" data-lp="${a.artisanId}">Enregistrer un paiement</button></td></tr>`; }).join("") || "<tr><td class='muted'>Aucun artisan.</td></tr>"}</table>`;
+    $("#suLoy").querySelectorAll("[data-ldel]").forEach((b) => (b.onclick = async () => { if (!confirm("Supprimer ce paiement ?")) return; const [a, id] = b.dataset.ldel.split("|"); await api(`/loyers/${a}/${id}`, { method: "DELETE" }); loyers(); }));
+    $("#suLoy").querySelectorAll("[data-lp]").forEach((b) => (b.onclick = () => {
+      const a = L.find((x) => x.artisanId === b.dataset.lp);
+      const du = a.couvertJusquau ? ymd(new Date(new Date(a.couvertJusquau + "T12:00:00").getTime() + 864e5)) : a.dateDebut || auj;
+      const au = (() => { const d = new Date(du + "T12:00:00"); d.setMonth(d.getMonth() + 3); d.setDate(d.getDate() - 1); return ymd(d); })();
+      openModal(`<h2>Loyer – ${esc(a.nom)}</h2><div class="row"><div><label>Montant (€)</label><input id="lMt" inputmode="decimal" value="${((a.loyer * 3) / 100).toFixed(2).replace(".", ",")}"></div><div><label>Mode</label><select id="lMo"><option>Virement</option><option>Carte</option><option>Espèces</option><option>Chèque</option></select></div></div>
+        <div class="row"><div><label>Du</label><input type="date" id="lDu" value="${du}"></div><div><label>Au</label><input type="date" id="lAu" value="${au}"></div></div>
+        <label>Note</label><input id="lNo"><div id="lmsg"></div>
+        <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="lGo">Enregistrer</button></div>`);
+      $("#lGo").onclick = async () => { try { await api("/loyers", { method: "POST", body: { artisanId: a.artisanId, montant: $("#lMt").value, mode: $("#lMo").value, du: $("#lDu").value, au: $("#lAu").value, note: $("#lNo").value } }); closeModal(); loyers(); } catch (e) { msg($("#lmsg"), e.message); } };
+    }));
+  };
+  const reversements = async () => {
+    const mois = $("#suM").value, R = await api("/reversements?mois=" + mois);
+    $("#suRev").innerHTML = `<table><tr><th>Artisan</th><th class="num">Ventes</th><th class="num">Facture</th><th class="num">À reverser</th><th>Virement</th><th></th></tr>${R.map((r) => `<tr><td><b>${esc(r.initiales)}</b> ${esc(r.nom)}</td><td class="num">${eur(r.ca)}</td><td class="num">${eur(r.commission + r.supplement)}${r.report ? `<div class="muted">+ report ${eur(r.report)}</div>` : ""}</td>
+      <td class="num"><b style="color:${r.aReverser < 0 ? "var(--rouge)" : "inherit"}">${r.aReverser < 0 ? "Reste dû " + eur(-r.aReverser) : eur(r.aReverser)}</b></td>
+      <td>${r.fait ? `<span class="tag">Payé le ${fd(r.fait.date)} · ${eur(r.fait.montant)}</span>` : r.aReverser > 0 ? '<span class="tag off">à faire</span>' : '<span class="muted">rien à verser</span>'}</td>
+      <td class="num"><button class="btn small osb" data-rr="${r.artisanId}">Relevé</button> ${r.fait ? `<button class="btn small ghost" data-rx="${r.artisanId}">Annuler</button>` : r.aReverser > 0 ? `<button class="btn small" data-rp="${r.artisanId}" data-v="${r.aReverser}">Marquer payé</button>` : ""}</td></tr>`).join("") || "<tr><td class='muted'>Aucun artisan.</td></tr>"}
+      <tr><td><b>Total</b></td><td class="num"><b>${eur(R.reduce((t, r) => t + r.ca, 0))}</b></td><td></td><td class="num"><b>${eur(R.reduce((t, r) => t + Math.max(0, r.aReverser), 0))}</b></td><td colspan="2"></td></tr></table>`;
+    $("#suRev").querySelectorAll("[data-rr]").forEach((b) => (b.onclick = () => imprimerReleve(mois, b.dataset.rr).catch((e) => alert(e.message))));
+    $("#suRev").querySelectorAll("[data-rx]").forEach((b) => (b.onclick = async () => { await api("/reversements", { method: "POST", body: { mois, artisanId: b.dataset.rx, annuler: true } }); reversements(); }));
+    $("#suRev").querySelectorAll("[data-rp]").forEach((b) => (b.onclick = async () => {
+      const d = prompt("Date du virement (AAAA-MM-JJ) :", auj); if (!d) return;
+      await api("/reversements", { method: "POST", body: { mois, artisanId: b.dataset.rp, montant: (b.dataset.v / 100).toFixed(2), date: d } }); reversements();
+    }));
+  };
+  const inventaires = async () => {
+    const I = await api("/inventaires");
+    $("#suInv").innerHTML = `<table><tr><th>Date</th><th>Artisan</th><th>Par</th><th class="num">Articles comptés</th><th class="num">Manquants</th><th class="num">Valeur manquante</th></tr>${I.map((i) => `<tr><td>${fdate(i.date)}</td><td>${esc(i.artisanNom)}</td><td>${esc(i.par)}</td><td class="num">${i.lignes.length}</td><td class="num">${i.manquants}</td><td class="num" style="color:${i.demarque ? "var(--rouge)" : "inherit"}">${eur(i.demarque)}</td></tr>`).join("") || "<tr><td class='muted'>Aucun inventaire pour l'instant.</td></tr>"}
+      <tr><td colspan="5"><b>Total démarque</b></td><td class="num"><b>${eur(I.reduce((t, i) => t + i.demarque, 0))}</b></td></tr></table>`;
+  };
+  const bons = async () => {
+    const B = await api("/bons");
+    const actifs = B.filter((b) => !b.annule && b.solde > 0 && b.expire >= auj);
+    $("#suBon").innerHTML = `<p>En circulation : <b>${eur(actifs.reduce((t, b) => t + b.solde, 0))}</b> (${actifs.length} bons non utilisés). C'est de l'argent dû aux clients jusqu'à l'utilisation.</p>
+      <table><tr><th>Code</th><th>Type</th><th>Émis le</th><th class="num">Montant</th><th class="num">Reste</th><th>Valable jusqu'au</th></tr>${B.map((b) => `<tr><td><b>${esc(b.code)}</b></td><td>${b.type === "avoir" ? "Avoir" : "Carte cadeau"}${b.annule ? ' <span class="tag off">annulé</span>' : ""}</td><td>${fdate(b.creeLe)}</td><td class="num">${eur(b.montant)}</td><td class="num">${eur(b.solde)}</td><td style="color:${b.expire < auj ? "var(--rouge)" : "inherit"}">${fd(b.expire)}</td></tr>`).join("") || "<tr><td class='muted'>Aucun bon.</td></tr>"}</table>`;
+  };
+  const A = await api("/artisans");
+  $("#suInvA").innerHTML = A.filter((a) => a.actif).map((a) => `<option value="${a.id}">${esc(a.initiales)} – ${esc(a.nom)}</option>`).join("");
+  $("#suInvGo").onclick = async () => { const id = $("#suInvA").value; if (!id) return; const P = (await api("/produits")).filter((p) => p.artisanId === id && p.actif !== false); faireInventaire(P, id, inventaires); };
+  $("#suM").onchange = reversements;
+  loyers(); reversements(); inventaires(); bons();
 }
 
 async function adminProduits() {

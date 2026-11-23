@@ -36,7 +36,32 @@ const toCents = (v) => Math.round(Number(String(v).replace(",", ".")) * 100);
 
 // Article propre à la boutique (hors artisans) : le sac
 const SAC = { ref: "SAC", nom: "Sac", prix: 20, artisanId: "boutique", actif: true, stock: null };
-async function getProduit(ref) { return String(ref).toUpperCase() === "SAC" ? SAC : await getJSON(`products/${ref}`); }
+// Carte cadeau : montant libre, ce n'est pas du chiffre d'affaires (c'est de l'argent dû au client jusqu'à son utilisation)
+const CADEAU = { ref: "CADEAU", nom: "Carte cadeau", prix: 0, artisanId: "cartecadeau", actif: true, stock: null };
+async function getProduit(ref) {
+  const R = String(ref).toUpperCase();
+  return R === "SAC" ? SAC : R === "CADEAU" ? CADEAU : await getJSON(`products/${ref}`);
+}
+const estCadeau = (l) => l.artisanId === "cartecadeau";
+// Moyens de paiement qui ne sont pas de l'argent encaissé
+const HORS_ENCAISSEMENT = ["Bon d'achat", "Avoir émis"];
+function codeBon(prefixe) { return prefixe + "-" + crypto.randomBytes(4).toString("hex").toUpperCase().slice(0, 6); }
+async function creerBon(type, montant, origine) {
+  const prefixe = type === "avoir" ? "AV" : "CC";
+  let code; do code = codeBon(prefixe); while (await getJSON(`bons/${code}`));
+  const d = new Date(); const exp = new Date(d); exp.setFullYear(d.getFullYear() + 1);
+  const b = { code, type, montant, solde: montant, creeLe: d.toISOString(), expire: exp.toISOString().slice(0, 10), origine, mouvements: [{ date: d.toISOString(), montant, detail: "Émission" }], annule: false };
+  await setJSON(`bons/${code}`, b);
+  return b;
+}
+async function mouvementBon(code, delta, detail) {
+  const b = await getJSON(`bons/${code}`);
+  if (!b) return null;
+  b.solde = Math.max(0, b.solde + delta);
+  b.mouvements.push({ date: new Date().toISOString(), montant: delta, detail });
+  await setJSON(`bons/${code}`, b);
+  return b;
+}
 async function getJSON(key) { return await store().get(key, { type: "json" }); }
 async function setJSON(key, v) { await store().setJSON(key, v); }
 async function listJSON(prefix) {
@@ -114,17 +139,20 @@ async function ventesEntre(du, au) {
   return all.filter((v) => { const d = parisDate(v.date); return d >= du && d <= au; }).sort((a, b) => b.date.localeCompare(a.date));
 }
 // Analyse complète pour la gérance
+// Chiffre d'affaires d'un ticket = articles vendus (hors cartes cadeaux vendues)
+const caTicket = (v) => v.lignes.reduce((s, l) => s + (estCadeau(l) ? 0 : l.total), 0);
+const estRetour = (v) => v.type === "retour";
 function analyse(ventes) {
-  const tickets = ventes.length;
-  const total = ventes.reduce((s, v) => s + v.total, 0);
-  const articles = ventes.reduce((s, v) => s + v.lignes.reduce((a, l) => a + l.qte, 0), 0);
+  const tickets = ventes.filter((v) => !estRetour(v)).length;
+  const total = ventes.reduce((s, v) => s + caTicket(v), 0);
+  const articles = ventes.reduce((s, v) => s + v.lignes.reduce((a, l) => a + (estCadeau(l) ? 0 : l.qte), 0), 0);
   const parJour = {}, parMode = {}, parHeure = {}, parArticle = {};
   for (const v of ventes) {
-    const d = parisDate(v.date);
-    (parJour[d] ||= { date: d, ca: 0, tickets: 0 }); parJour[d].ca += v.total; parJour[d].tickets++;
+    const d = parisDate(v.date), ca = caTicket(v), t = estRetour(v) ? 0 : 1;
+    (parJour[d] ||= { date: d, ca: 0, tickets: 0 }); parJour[d].ca += ca; parJour[d].tickets += t;
     for (const [k, x] of Object.entries(montantsParMode(v))) parMode[k] = (parMode[k] || 0) + x;
-    const h = parisHeure(v.date); (parHeure[h] ||= { heure: h, ca: 0, tickets: 0 }); parHeure[h].ca += v.total; parHeure[h].tickets++;
-    for (const l of v.lignes) { const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, artisanId: l.artisanId, artisanNom: l.artisanNom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
+    const h = parisHeure(v.date); (parHeure[h] ||= { heure: h, ca: 0, tickets: 0 }); parHeure[h].ca += ca; parHeure[h].tickets += t;
+    for (const l of v.lignes) { if (estCadeau(l)) continue; const a = (parArticle[l.ref] ||= { ref: l.ref, nom: l.nom, artisanId: l.artisanId, artisanNom: l.artisanNom, qte: 0, ca: 0 }); a.qte += l.qte; a.ca += l.total; }
   }
   const arts = Object.values(parArticle);
   return {
@@ -136,6 +164,8 @@ function analyse(ventes) {
     topArticlesValeur: [...arts].sort((a, b) => b.ca - a.ca).slice(0, 10),
     topArticlesQte: [...arts].sort((a, b) => b.qte - a.qte).slice(0, 10),
     tousArticles: arts,
+    retours: { nb: ventes.filter(estRetour).length, montant: -ventes.filter(estRetour).reduce((s, v) => s + caTicket(v), 0) },
+    cartesVendues: ventes.reduce((s, v) => s + v.lignes.reduce((a, l) => a + (estCadeau(l) ? l.total : 0), 0), 0),
   };
 }
 
@@ -151,8 +181,11 @@ async function calculerZ(jour, comptageFermeture) {
   const [ouverture, sorties] = await Promise.all([getJSON(`caisse/${jour}/ouverture`), listJSON(`caisse/${jour}/sorties/`)]);
   const parMode = {};
   Object.assign(parMode, cumulModes(ventes));
-  const ca = ventes.reduce((t, v) => t + v.total, 0);
-  const articles = ventes.reduce((t, v) => t + v.lignes.reduce((a, l) => a + l.qte, 0), 0);
+  const A = analyse(ventes);
+  const ca = A.totalMagasin, articles = A.articles;
+  const encaisse = Object.entries(parMode).reduce((t, [k, x]) => t + (HORS_ENCAISSEMENT.includes(k) ? 0 : x), 0);
+  const parVendeur = {};
+  for (const v of ventes) { const n = v.vendeur?.nom || "Non renseigné"; (parVendeur[n] ||= { nom: n, tickets: 0, ca: 0 }); if (!estRetour(v)) parVendeur[n].tickets++; parVendeur[n].ca += caTicket(v); }
   const especes = parMode["Espèces"] || 0;
   const fondOuverture = ouverture ? ouverture.total : s.fondReserve;
   const totalSorties = sorties.reduce((t, x) => t + x.montant, 0);
@@ -160,8 +193,9 @@ async function calculerZ(jour, comptageFermeture) {
   const attendu = fondOuverture + especes - totalSorties;
   const res = resumeParArtisan(ventes, s.commission);
   return {
-    jour, heure: new Date().toISOString(), nbVentes: ventes.length, articles, ca, parMode,
-    panierMoyen: ventes.length ? Math.round(ca / ventes.length) : 0,
+    jour, heure: new Date().toISOString(), nbVentes: A.nbVentes, articles, ca, parMode, encaisse,
+    retours: A.retours, cartesVendues: A.cartesVendues, parVendeur: Object.values(parVendeur),
+    panierMoyen: A.panierMoyen,
     annulations: { nb: annulees.length, montant: annulees.reduce((t, v) => t + v.total, 0) },
     commission: res.par.reduce((t, r) => t + r.commission, 0), parArtisan: res.par,
     fondOuverture, ouvertureValidee: !!ouverture, especes, sorties, totalSorties,
@@ -179,8 +213,13 @@ function calcRemise(r, base) {
 }
 // Répartition d'un ticket par moyen de paiement (le paiement mixte est réparti)
 function montantsParMode(v) {
-  if (v.paiement.mode === "Mixte") return { CB: v.paiement.cb || 0, "Espèces": v.paiement.especes || 0 };
-  return { [v.paiement.mode]: v.total };
+  const p = v.paiement, r = {};
+  if (p.mode === "Avoir émis") return { "Avoir émis": v.total };
+  const bon = p.bon?.montant || 0;
+  if (bon) r["Bon d'achat"] = bon;
+  if (p.mode === "Mixte") { r.CB = p.cb || 0; r["Espèces"] = p.especes || 0; }
+  else if (p.mode !== "Bon") r[p.mode] = v.total - bon;
+  return r;
 }
 function cumulModes(ventes) {
   const r = {};
@@ -267,8 +306,20 @@ async function releve(mois, artisanId) {
     artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand },
     lignes: c.lignes, ca: c.ca, commissionTaux: s.commission, commission: c.commission, penalites: [], totalPenalites: 0, loyer,
     formule: c.sansAccueil ? "sans participation à l'accueil" : "avec participation à l'accueil",
-    supplement: c.supplement, report: c.report, aReverser: c.solde, facture: fac,
+    supplement: c.supplement, report: c.report, aReverser: c.solde, facture: fac, reversement: await getJSON(`reversements/${mois}/${artisanId}`),
   };
+}
+
+// ---- Alertes : rupture, stock bas, date limite proche ou dépassée ----
+function alertesProduits(prods, auj) {
+  const dans7 = addDays(auj, 7), out = [];
+  for (const p of prods) {
+    if (typeof p.stock === "number" && p.stock === 0) out.push({ ...p, alerte: "Rupture de stock", niveau: 2 });
+    else if (typeof p.stock === "number" && p.seuil != null && p.stock <= p.seuil) out.push({ ...p, alerte: `Stock bas (${p.stock})`, niveau: 1 });
+    if (p.dlc && p.dlc < auj) out.push({ ...p, alerte: "Date limite dépassée", niveau: 2 });
+    else if (p.dlc && p.dlc <= dans7) out.push({ ...p, alerte: "Date limite dans moins de 7 jours", niveau: 1 });
+  }
+  return out.sort((a, b) => b.niveau - a.niveau);
 }
 
 // ---- Annulations, modifications, journal ----
@@ -289,18 +340,27 @@ async function annulerVente(mois, id, { ligne = null, motif = "", par = "" }) {
   if (!v) throw new UErr("Vente introuvable");
   if (v.annulee) return v;
   v.historique ||= [];
+  const annulerCarte = async (l) => { if (estCadeau(l) && l.code) { const b = await getJSON(`bons/${l.code}`); if (b) { b.annule = true; b.solde = 0; b.mouvements.push({ date: new Date().toISOString(), montant: 0, detail: "Carte annulée avec le ticket " + v.numero }); await setJSON(`bons/${b.code}`, b); } } };
   if (ligne === null || ligne === undefined) {
     v.annulee = true; v.annuleeLe = new Date().toISOString();
-    for (const l of v.lignes) await majStock(l.ref, l.qte);
+    for (const l of v.lignes) { if (!estCadeau(l)) await majStock(l.ref, l.qte); await annulerCarte(l); }
+    if (v.paiement.bon?.montant) await mouvementBon(v.paiement.bon.code, v.paiement.bon.montant, "Ticket " + v.numero + " annulé");
+    if (v.paiement.avoir) { const b = await getJSON(`bons/${v.paiement.avoir}`); if (b) { b.annule = true; b.solde = 0; await setJSON(`bons/${b.code}`, b); } }
+    if (v.origine) { const o = await getJSON(`sales/${v.origine.mois}/${v.origine.id}`); if (o) { for (const r of v.origine.lignes || []) if (o.lignes[r.index]) o.lignes[r.index].retourne = Math.max(0, (o.lignes[r.index].retourne || 0) - r.qte); await setJSON(`sales/${v.origine.mois}/${o.id}`, o); } }
     v.historique.push({ date: v.annuleeLe, action: "Ticket annulé", motif, par });
     await journaliser({ type: "Annulation de ticket", ticket: v.numero, montant: v.total, motif, par });
   } else {
     const l = v.lignes[ligne];
     if (!l) throw new UErr("Ligne introuvable");
+    if (estRetour(v)) throw new UErr("Pour un retour, annulez le ticket de retour en entier");
     v.lignes.splice(ligne, 1);
     v.total -= l.total;
-    if (v.paiement.mode === "Mixte") { v.paiement.cb = Math.max(0, (v.paiement.cb || 0) - l.total); v.paiement.especes = v.total - v.paiement.cb; }
-    await majStock(l.ref, l.qte);
+    // si un bon d'achat couvrait plus que le nouveau total, la différence revient sur le bon
+    if (v.paiement.bon?.montant > v.total) { const d = v.paiement.bon.montant - v.total; await mouvementBon(v.paiement.bon.code, d, "Ligne annulée sur le ticket " + v.numero); v.paiement.bon.montant = v.total; }
+    const reste = v.total - (v.paiement.bon?.montant || 0);
+    if (v.paiement.mode === "Mixte") { v.paiement.cb = Math.min(reste, v.paiement.cb || 0); v.paiement.especes = reste - v.paiement.cb; }
+    if (!estCadeau(l)) await majStock(l.ref, l.qte);
+    await annulerCarte(l);
     v.historique.push({ date: new Date().toISOString(), action: `Ligne annulée : ${l.qte} × ${l.nom} (${l.artisanNom})`, motif, par });
     await journaliser({ type: "Annulation de ligne", ticket: v.numero, detail: `${l.qte} × ${l.nom} (${l.artisanNom})`, montant: l.total, motif, par });
     if (!v.lignes.length) { v.annulee = true; v.annuleeLe = new Date().toISOString(); }
@@ -315,6 +375,7 @@ function resumeParArtisan(ventes, taux) {
   for (const v of ventes) {
     if (v.annulee) continue;
     for (const l of v.lignes) {
+      if (estCadeau(l)) continue;
       total += l.total;
       const r = (par[l.artisanId] ||= { artisanId: l.artisanId, artisanNom: l.artisanNom, ca: 0, articles: 0 });
       r.ca += l.total;
@@ -378,11 +439,28 @@ export default async (req) => {
         const idClient = /^[a-f0-9-]{36}$/.test(body.id || "") ? body.id : null;
         const date = idClient && body.date && !isNaN(Date.parse(body.date)) ? new Date(body.date).toISOString() : new Date().toISOString();
         if (idClient) { const ex = await getJSON(`sales/${moisDe(date)}/${idClient}`); if (ex) return json(ex); }
-        const arts = Object.fromEntries((await listJSON("artisans/")).map((a) => [a.id, a]));
+        const listeArts = await listJSON("artisans/");
+        const arts = Object.fromEntries(listeArts.map((a) => [a.id, a]));
+        // qui encaisse : la gérance connectée, ou l'artisan d'accueil identifié par ses initiales
+        let vendeur;
+        if (auth(req)?.role === "admin") vendeur = { initiales: "GÉR", nom: "Gérance" };
+        else {
+          const I = String(body.vendeur || "").trim().toUpperCase();
+          const a = listeArts.find((x) => x.initiales === I && x.actif);
+          if (!a && !idClient) return err("Indiquez les initiales de la personne en caisse");
+          if (!a && !body.sync) return err("Initiales de la personne en caisse inconnues");
+          vendeur = a ? { initiales: a.initiales, nom: a.nom } : { initiales: I, nom: I || "Non renseigné" };
+        }
         const lignes = [];
         for (const l of lignesIn) {
           const p = await getProduit(l.ref);
           if (!p) return err(`Article inconnu : ${l.ref}`);
+          if (estCadeau(p)) {
+            const montant = toCents(l.montant || 0);
+            if (!(montant > 0)) return err("Montant de la carte cadeau manquant");
+            lignes.push({ ref: "CADEAU", nom: "Carte cadeau", artisanId: "cartecadeau", artisanNom: "Carte cadeau", qte: 1, pu: montant, remise: null, total: montant });
+            continue;
+          }
           const qte = Math.max(1, parseInt(l.qte, 10) || 1);
           const artisanNom = p.artisanId === "boutique" ? "Boutique" : arts[p.artisanId]?.nom || "";
           const brut = p.prix * qte;
@@ -391,25 +469,96 @@ export default async (req) => {
         }
         // remise sur tout le ticket : répartie au prorata sur les lignes
         let remiseTicket = null;
-        const sousTotal = lignes.reduce((t, l) => t + l.total, 0);
+        // remise sur le ticket : uniquement sur les articles (pas sur les cartes cadeaux)
+        const remisables = lignes.filter((l) => !estCadeau(l));
+        const sousTotal = remisables.reduce((t, l) => t + l.total, 0);
         const rt = calcRemise(body.remiseTicket, sousTotal);
         if (rt > 0) {
           let reste = rt;
-          lignes.forEach((l, i) => { const part = i === lignes.length - 1 ? reste : Math.round((rt * l.total) / sousTotal); l.total -= part; l.remiseTicket = part; reste -= part; });
+          remisables.forEach((l, i) => { const part = i === remisables.length - 1 ? reste : Math.round((rt * l.total) / sousTotal); l.total -= part; l.remiseTicket = part; reste -= part; });
           remiseTicket = { ...body.remiseTicket, montant: rt };
         }
         const total = lignes.reduce((t, l) => t + l.total, 0);
         const pay = body.paiement || {};
         const paiement = { mode: ["CB", "Espèces", "Mixte"].includes(pay.mode) ? pay.mode : "CB", recu: pay.recu ? toCents(pay.recu) : null };
+        // bon d'achat / avoir / carte cadeau utilisé en premier
+        let bonUtilise = null;
+        if (pay.bon) {
+          const b = await getJSON(`bons/${String(pay.bon).trim().toUpperCase()}`);
+          if (!b || b.annule) return err("Bon d'achat introuvable");
+          if (b.expire < parisDate(date)) return err(`Ce bon a expiré le ${b.expire.split("-").reverse().join("/")}`);
+          if (!(b.solde > 0)) return err("Ce bon a déjà été entièrement utilisé");
+          bonUtilise = b;
+          paiement.bon = { code: b.code, type: b.type, montant: Math.min(b.solde, total) };
+        }
+        const reste = total - (paiement.bon?.montant || 0);
+        if (reste === 0 && paiement.bon) { paiement.mode = "Bon"; paiement.recu = null; }
         if (paiement.mode === "Mixte") {
           paiement.cb = toCents(pay.cb || 0);
-          paiement.especes = total - paiement.cb;
+          paiement.especes = reste - paiement.cb;
           if (paiement.cb < 0 || paiement.especes < 0) return err("Montants du paiement mixte incorrects");
         }
-        const vente = { id: idClient || uid(), numero: `${parisDate(date).replace(/-/g, "")}-${Date.parse(date).toString().slice(-5)}`, date, lignes, remiseTicket, total, paiement, poste: dev.nom, horsLigne: !!idClient, annulee: false };
+        const vente = { id: idClient || uid(), numero: `${parisDate(date).replace(/-/g, "")}-${Date.parse(date).toString().slice(-5)}`, date, lignes, remiseTicket, total, paiement, vendeur, poste: dev.nom, horsLigne: !!body.sync, annulee: false };
+        if (bonUtilise) await mouvementBon(bonUtilise.code, -paiement.bon.montant, "Utilisé sur le ticket " + vente.numero);
+        for (const l of lignes) if (estCadeau(l)) l.code = (await creerBon("carte cadeau", l.total, vente.numero)).code;
         await setJSON(`sales/${moisDe(date)}/${vente.id}`, vente);
-        for (const l of lignes) await majStock(l.ref, -l.qte);
+        for (const l of lignes) if (!estCadeau(l)) await majStock(l.ref, -l.qte);
         return json(vente);
+      }
+
+      // ----- Retour / échange -----
+      if (path === "/caisse/ticket" && m === "GET") {
+        const n = String(url.searchParams.get("numero") || "").trim();
+        const md = n.match(/^(\d{4})(\d{2})\d{2}-/);
+        if (!md) return err("Numéro de ticket incorrect (ex. 20270115-12345)");
+        const mois = `${md[1]}-${md[2]}`;
+        const v = (await ventesDuMois(mois)).find((x) => x.numero === n);
+        if (!v) return err("Ticket introuvable");
+        return json(v);
+      }
+      if (path === "/caisse/retour" && m === "POST") {
+        const gerantR = auth(req)?.role === "admin";
+        const motif = String(body.motif || "").trim(), par = String(body.par || "").trim();
+        if (!gerantR && (!motif || !par)) return err("Motif et nom obligatoires pour un retour");
+        const key = `sales/${body.mois}/${body.id}`;
+        const o = await getJSON(key);
+        if (!o) return err("Ticket introuvable");
+        if (o.annulee) return err("Ce ticket est annulé");
+        if (estRetour(o)) return err("Impossible de faire un retour sur un ticket de retour");
+        const choix = (body.lignes || []).map((r) => ({ index: parseInt(r.index, 10), qte: parseInt(r.qte, 10) || 0 })).filter((r) => r.qte > 0);
+        if (!choix.length) return err("Choisissez au moins un article à reprendre");
+        const lignes = [];
+        for (const r of choix) {
+          const l = o.lignes[r.index];
+          if (!l) return err("Ligne introuvable");
+          if (estCadeau(l) || l.artisanId === "boutique") return err(`${l.nom} ne peut pas être repris`);
+          if (r.qte > l.qte - (l.retourne || 0)) return err(`${l.nom} : ${l.qte - (l.retourne || 0)} au maximum à reprendre`);
+          const montant = Math.round((l.total * r.qte) / l.qte);
+          lignes.push({ ref: l.ref, nom: l.nom, artisanId: l.artisanId, artisanNom: l.artisanNom, qte: -r.qte, pu: l.pu, remise: null, total: -montant });
+        }
+        const total = lignes.reduce((t, l) => t + l.total, 0);
+        const rembourse = ["avoir", "CB", "Espèces"].includes(body.remboursement) ? body.remboursement : "avoir";
+        const date = new Date().toISOString();
+        const numero = `${parisDate(date).replace(/-/g, "")}-${Date.parse(date).toString().slice(-5)}`;
+        const paiement = { mode: rembourse === "avoir" ? "Avoir émis" : rembourse, recu: null };
+        let bon = null;
+        if (rembourse === "avoir") { bon = await creerBon("avoir", -total, numero); paiement.avoir = bon.code; }
+        const parA = gerantR ? null : await artisanParInitiales(par);
+        const gerantNom = gerantR ? "Gérance" : parA ? parA.nom : par;
+        const v = { id: uid(), type: "retour", numero, date, lignes, total, paiement, origine: { mois: body.mois, id: o.id, numero: o.numero, lignes: choix }, vendeur: { initiales: "", nom: gerantNom }, motif, poste: dev.nom, annulee: false };
+        await setJSON(`sales/${moisDe(date)}/${v.id}`, v);
+        for (const r of choix) o.lignes[r.index].retourne = (o.lignes[r.index].retourne || 0) + r.qte;
+        o.historique ||= []; o.historique.push({ date, action: `Retour (ticket ${numero}) : ${lignes.map((l) => -l.qte + " × " + l.nom).join(", ")}`, motif, par: gerantNom });
+        await setJSON(key, o);
+        for (const l of lignes) await majStock(l.ref, -l.qte);
+        await journaliser({ type: "Retour client", ticket: o.numero, detail: lignes.map((l) => -l.qte + " × " + l.nom + " (" + l.artisanNom + ")").join(", ") + " – " + (rembourse === "avoir" ? "avoir " + bon.code : "remboursé en " + rembourse), montant: total, motif, par: gerantNom });
+        return json({ ...v, bon });
+      }
+      const mBon = path.match(/^\/caisse\/bon\/([A-Za-z0-9-]+)$/);
+      if (mBon && m === "GET") {
+        const b = await getJSON(`bons/${mBon[1].toUpperCase()}`);
+        if (!b || b.annule) return err("Bon introuvable");
+        return json(b);
       }
 
       // ----- Tiroir-caisse : ouverture, sorties d'espèces, clôture (ticket Z) -----
@@ -484,7 +633,12 @@ export default async (req) => {
         const ok = ventes.filter((v) => !v.annulee);
         const parMode = {};
         Object.assign(parMode, cumulModes(ok));
-        return json({ jour, ventes, total: ok.reduce((s, v) => s + v.total, 0), nbVentes: ok.length, parMode });
+        return json({ jour, ventes, total: ok.reduce((s, v) => s + caTicket(v), 0), nbVentes: ok.filter((v) => !estRetour(v)).length, parMode });
+      }
+      if (path === "/caisse/vendeur" && m === "GET") {
+        const a = await artisanParInitiales(url.searchParams.get("initiales"));
+        if (!a) return err("Initiales inconnues");
+        return json({ initiales: a.initiales, nom: a.nom });
       }
       return err("Route inconnue", 404);
     }
@@ -532,6 +686,7 @@ export default async (req) => {
         ref, artisanId, nom: String(body.nom).trim(), prix: toCents(body.prix),
         stock: body.stock === "" || body.stock == null ? null : Math.max(0, parseInt(body.stock, 10) || 0),
         categorie: String(body.categorie || "").trim(), description: String(body.description || "").trim(),
+        dlc: /^\d{4}-\d{2}-\d{2}$/.test(body.dlc || "") ? body.dlc : "", seuil: body.seuil === "" || body.seuil == null ? null : Math.max(0, parseInt(body.seuil, 10) || 0),
         actif: true, creeLe: new Date().toISOString(),
       };
       await setJSON(`products/${ref}`, p);
@@ -549,6 +704,8 @@ export default async (req) => {
         if (body.categorie != null) p.categorie = String(body.categorie).trim();
         if (body.description != null) p.description = String(body.description).trim();
         if (body.actif != null) p.actif = !!body.actif;
+        if (body.dlc !== undefined) p.dlc = /^\d{4}-\d{2}-\d{2}$/.test(body.dlc || "") ? body.dlc : "";
+        if (body.seuil !== undefined) p.seuil = body.seuil === "" || body.seuil == null ? null : Math.max(0, parseInt(body.seuil, 10) || 0);
         await setJSON(`products/${p.ref}`, p);
         return json(p);
       }
@@ -617,7 +774,7 @@ export default async (req) => {
         const vs = ventes.filter((v) => { const d = parisDate(v.date); return d >= r.du && d <= r.au; });
         const res = resumeParArtisan(vs, settings.commission);
         const mine = res.par.find((x) => x.artisanId === user.id) || { ca: 0, articles: 0, commission: 0, net: 0 };
-        out[k] = { ...r, magasin: res.total, tickets: vs.filter((v) => !v.annulee).length, moi: isAdmin ? null : mine };
+        out[k] = { ...r, magasin: res.total, tickets: vs.filter((v) => !v.annulee && !estRetour(v)).length, moi: isAdmin ? null : mine };
       }
       return json({ commissionTaux: settings.commission, periodes: out });
     }
@@ -636,8 +793,83 @@ export default async (req) => {
       return json({ du, au, commissionTaux: settings.commission, totalMagasin: res.total, moi: mine, lignes, topArticles: Object.values(parArticle).sort((a, b) => b.ca - a.ca).slice(0, 10), topArticlesQte: Object.values(parArticle).sort((a, b) => b.qte - a.qte).slice(0, 10) });
     }
 
+    // --- Alertes stock et DLC ---
+    if (path === "/alertes" && m === "GET") {
+      const prods = (await listJSON("products/")).filter((p) => p.actif !== false && (isAdmin || p.artisanId === user.id));
+      const noms = isAdmin ? Object.fromEntries((await listJSON("artisans/")).map((a) => [a.id, a.nom])) : {};
+      return json(alertesProduits(prods, parisDate(new Date().toISOString())).map((x) => ({ ...x, artisanNom: noms[x.artisanId] || "" })));
+    }
+
+    // --- Inventaire (comptage du stock, écarts = démarque) ---
+    if (path === "/inventaire" && m === "POST") {
+      const artisanId = isAdmin ? body.artisanId : user.id;
+      const a = await getJSON(`artisans/${artisanId}`);
+      if (!a) return err("Artisan introuvable");
+      const lignes = [];
+      for (const r of body.lignes || []) {
+        if (r.compte === "" || r.compte == null) continue;
+        const p = await getJSON(`products/${r.ref}`);
+        if (!p || p.artisanId !== artisanId) continue;
+        const compte = Math.max(0, parseInt(r.compte, 10) || 0);
+        const theorique = typeof p.stock === "number" ? p.stock : null;
+        const ecart = theorique === null ? 0 : compte - theorique;
+        lignes.push({ ref: p.ref, nom: p.nom, prix: p.prix, theorique, compte, ecart, valeurEcart: ecart * p.prix });
+        p.stock = compte; await setJSON(`products/${p.ref}`, p);
+      }
+      if (!lignes.length) return err("Saisissez au moins une quantité comptée");
+      const inv = { id: uid(), date: new Date().toISOString(), artisanId, artisanNom: a.nom, par: isAdmin ? "Gérance" : a.nom, lignes,
+        manquants: lignes.reduce((t, l) => t + (l.ecart < 0 ? -l.ecart : 0), 0), demarque: lignes.reduce((t, l) => t + (l.ecart < 0 ? -l.valeurEcart : 0), 0) };
+      await setJSON(`inventaires/${inv.id}`, inv);
+      return json(inv);
+    }
+    if (path === "/inventaires" && m === "GET") {
+      const all = await listJSON("inventaires/");
+      return json(all.filter((i) => isAdmin || i.artisanId === user.id).sort((x, y) => y.date.localeCompare(x.date)));
+    }
+
     // ---------- Administration (gérance uniquement) ----------
     if (!isAdmin) return err("Réservé à la gérance", 403);
+
+    // --- Loyers payés d'avance et reversements ---
+    if (path === "/loyers" && m === "GET") {
+      const [arts, paies] = await Promise.all([listJSON("artisans/"), listJSON("loyers/")]);
+      return json(arts.filter((a) => a.actif).map((a) => {
+        const p = paies.filter((x) => x.artisanId === a.id).sort((x, y) => x.du.localeCompare(y.du));
+        const couvert = p.reduce((mx, x) => (x.au > mx ? x.au : mx), "");
+        return { artisanId: a.id, nom: a.nom, initiales: a.initiales, stand: a.stand, formule: a.formule, dateDebut: a.dateDebut, loyer: a.stand === "2 m" ? settings.prixStand2 : settings.prixStand1, paiements: p, couvertJusquau: couvert };
+      }).sort((x, y) => x.nom.localeCompare(y.nom, "fr")));
+    }
+    if (path === "/loyers" && m === "POST") {
+      const a = await getJSON(`artisans/${body.artisanId}`);
+      if (!a) return err("Artisan introuvable");
+      const montant = toCents(body.montant);
+      if (!(montant > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(body.du || "") || !/^\d{4}-\d{2}-\d{2}$/.test(body.au || "") || body.au < body.du) return err("Montant et période (du / au) obligatoires");
+      const x = { id: uid(), artisanId: a.id, montant, du: body.du, au: body.au, mode: String(body.mode || "Virement"), note: String(body.note || "").trim(), le: new Date().toISOString() };
+      await setJSON(`loyers/${a.id}/${x.id}`, x);
+      return json(x);
+    }
+    const mLoy = path.match(/^\/loyers\/([a-f0-9-]+)\/([a-f0-9-]+)$/);
+    if (mLoy && m === "DELETE") { await store().delete(`loyers/${mLoy[1]}/${mLoy[2]}`); return json({ ok: true }); }
+    if (path === "/reversements" && m === "GET") {
+      const mois = url.searchParams.get("mois") || parisDate(new Date().toISOString()).slice(0, 7);
+      const arts = (await listJSON("artisans/")).filter((a) => a.actif || (a.dateDebut || "") <= mois);
+      const faits = Object.fromEntries((await listJSON(`reversements/${mois}/`)).map((r) => [r.artisanId, r]));
+      const out = [];
+      for (const a of arts) { const c = await calculMois(mois, a, settings); out.push({ artisanId: a.id, nom: a.nom, initiales: a.initiales, ca: c.ca, commission: c.commission, supplement: c.supplement, report: c.report, aReverser: c.solde, fait: faits[a.id] || null }); }
+      return json(out.sort((x, y) => x.nom.localeCompare(y.nom, "fr")));
+    }
+    if (path === "/reversements" && m === "POST") {
+      const mois = String(body.mois || "");
+      if (!/^\d{4}-\d{2}$/.test(mois)) return err("Mois incorrect");
+      const key = `reversements/${mois}/${body.artisanId}`;
+      if (body.annuler) { await store().delete(key); return json({ ok: true }); }
+      const r = { mois, artisanId: body.artisanId, montant: toCents(body.montant || 0), date: /^\d{4}-\d{2}-\d{2}$/.test(body.date || "") ? body.date : parisDate(new Date().toISOString()), note: String(body.note || "").trim() };
+      await setJSON(key, r);
+      return json(r);
+    }
+    if (path === "/bons" && m === "GET") {
+      return json((await listJSON("bons/")).sort((x, y) => y.creeLe.localeCompare(x.creeLe)));
+    }
 
     if (path === "/artisans" && m === "GET") {
       return json((await listJSON("artisans/")).map(publicArtisan).sort((a, b) => a.nom.localeCompare(b.nom, "fr")));
@@ -650,9 +882,12 @@ export default async (req) => {
       const arts = await listJSON("artisans/");
       if (arts.some((a) => a.initiales === initiales)) return err("Ces initiales sont déjà utilisées");
       if (identifiant === "admin" || arts.some((a) => a.identifiant === identifiant)) return err("Cet identifiant est déjà utilisé");
+      const categorie = String(body.categorie || "").trim();
+      const memeCat = categorie ? arts.filter((a) => a.actif && (a.categorie || "").toLowerCase() === categorie.toLowerCase()).length : 0;
+      if (memeCat >= 4 && !body.forcer) return err(`Il y a déjà ${memeCat} artisans dans la catégorie « ${categorie} » (4 maximum prévus au contrat)`);
       const a = {
         id: uid(), nom, initiales, identifiant, pw: hashPw(body.motdepasse),
-        metier: String(body.metier || "").trim(), telephone: String(body.telephone || "").trim(), email: String(body.email || "").trim(),
+        metier: String(body.metier || "").trim(), categorie, telephone: String(body.telephone || "").trim(), email: String(body.email || "").trim(),
         stand: String(body.stand || "1 m"), formule: body.formule === "sans accueil" ? "sans accueil" : "avec accueil", dateDebut: String(body.dateDebut || "").slice(0, 10), actif: true, nextRef: 1, creeLe: new Date().toISOString(),
       };
       await setJSON(`artisans/${a.id}`, a);
@@ -662,7 +897,7 @@ export default async (req) => {
     if (mArt && m === "PUT") {
       const a = await getJSON(`artisans/${mArt[1]}`);
       if (!a) return err("Artisan introuvable", 404);
-      for (const k of ["nom", "metier", "telephone", "email", "stand", "dateDebut", "formule", "formuleDepuis"]) if (body[k] != null) a[k] = String(body[k]).trim();
+      for (const k of ["nom", "metier", "categorie", "telephone", "email", "stand", "dateDebut", "formule", "formuleDepuis"]) if (body[k] != null) a[k] = String(body[k]).trim();
       if (body.actif != null) a.actif = !!body.actif;
       if (body.motdepasse) { if (String(body.motdepasse).length < 6) return err("Mot de passe : 6 caractères minimum"); a.pw = hashPw(body.motdepasse); }
       await setJSON(`artisans/${a.id}`, a);
