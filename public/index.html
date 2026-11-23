@@ -121,12 +121,13 @@ const ibanCache = (i) => (i ? i.slice(0, 4) + " •••• " + i.slice(-4) : "
 const ibanLisible = (i) => (i || "").replace(/(.{4})/g, "$1 ").trim();
 const champsCoord = (a) => `<label>Adresse</label><textarea id="kAdr" rows="2">${esc(a.adresse || "")}</textarea>
   <div class="row"><div><label>Téléphone</label><input id="kTel" value="${esc(a.telephone || "")}"></div><div><label>E-mail</label><input id="kMail" value="${esc(a.email || "")}"></div></div>
-  <label>SIRET</label><input id="kSiret" value="${esc(a.siret || "")}">
+  <div class="row"><div><label>SIRET</label><input id="kSiret" value="${esc(a.siret || "")}"></div>
+  <div><label>TVA sur ses produits</label><select id="kTvaP">${[[0, "Non assujetti (TVA non applicable)"], [20, "Assujetti – 20 %"], [10, "Assujetti – 10 %"], [5.5, "Assujetti – 5,5 % (alimentaire…)"], [2.1, "Assujetti – 2,1 %"]].map(([v, l]) => `<option value="${v}" ${Number(a.tvaProduits || 0) === v ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
   <h3 style="margin-top:14px">RIB (pour recevoir les virements)</h3>
   <label>Titulaire du compte</label><input id="kTit" value="${esc(a.titulaire || "")}">
   <label>IBAN</label><input id="kIban" value="${esc(ibanLisible(a.iban))}" placeholder="FR76 …" style="text-transform:uppercase">
   <label>BIC</label><input id="kBic" value="${esc(a.bic || "")}" style="text-transform:uppercase">`;
-const valeursCoord = () => ({ adresse: $("#kAdr").value, telephone: $("#kTel").value, email: $("#kMail").value, siret: $("#kSiret").value, titulaire: $("#kTit").value, iban: $("#kIban").value, bic: $("#kBic").value });
+const valeursCoord = () => ({ adresse: $("#kAdr").value, telephone: $("#kTel").value, email: $("#kMail").value, siret: $("#kSiret").value, tvaProduits: $("#kTvaP").value, titulaire: $("#kTit").value, iban: $("#kIban").value, bic: $("#kBic").value });
 const libMode = (k) => ({ CB: "Carte bancaire", "Bon d'achat": "Bons, avoirs, cartes cadeaux utilisés (pas dans le tiroir)", "Avoir émis": "Avoirs émis pour des retours" }[k] || k);
 const fdate = (iso) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 let S = { token: localStorage.getItem("token"), role: localStorage.getItem("role"), nom: localStorage.getItem("nom"), cle: localStorage.getItem("cleCaisse"), initiales: localStorage.getItem("initiales") || "", settings: {} };
@@ -195,11 +196,11 @@ function showLogin() {
 }
 
 function route(k) {
-  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["planning", "Permanences"], ["suivi", "Loyers et suivi"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
+  const navA = [["caisse", "Caisse"], ["dashboard", "Tableau de bord et ventes"], ["planning", "Permanences"], ["suivi", "Loyers et suivi"], ["compta", "Comptabilité"], ["artisans", "Artisans"], ["produits", "Catalogue"], ["parametres", "Paramètres"]];
   const navR = [["catalogue", "Mon catalogue"], ["mesventes", "Mes ventes"], ["planning", "Permanences"], ["compte", "Mon compte"]];
   if (S.role === "admin") {
     setNav(navA, k);
-    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, planning: () => planningView(app), suivi: adminSuivi, artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
+    ({ dashboard: adminDashboard, caisse: showCaisse, ventes: adminVentes, planning: () => planningView(app), suivi: adminSuivi, compta: adminCompta, artisans: adminArtisans, produits: adminProduits, parametres: adminParametres }[k] || adminDashboard)();
   } else {
     setNav(navR, k);
     ({ catalogue: artisanCatalogue, mesventes: artisanVentes, planning: () => planningView(app), compte: compteView }[k] || artisanCatalogue)();
@@ -808,10 +809,95 @@ async function planningView(cible, modeCaisse = false) {
 }
 
 // ================== RELEVÉ MENSUEL ET FACTURE DE COMMISSION ==================
+// Facture d'un loyer (et des frais d'installation)
+async function imprimerFactureLoyer(artisanId, id) {
+  const f = await api(`/loyers/${artisanId}/${id}/facture`), b = f.boutique, x = f.paiement, tx = b.assujetti ? b.taux : 0;
+  const lignes = [[`Loyer du stand (${esc(f.artisan.stand || "")}) du ${fd(x.du)} au ${fd(x.au)}`, x.montant - (x.installation || 0)], ...(x.installation ? [["Frais d'installation (une fois)", x.installation]] : [])];
+  const tva = tx ? lignes.reduce((t, [, m]) => t + Math.round((m * tx) / (100 + tx)), 0) : 0;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Facture ${esc(x.facture)}</title><style>
+    body{font-family:Arial,sans-serif;font-size:12px;color:#222;max-width:190mm;margin:10mm auto}h1{font-size:18px;margin:0}h2{font-size:15px;margin:22px 0 8px;border-bottom:2px solid #6f8f72;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse}th,td{padding:6px;border-bottom:1px solid #ddd;text-align:left}.n{text-align:right}.head{display:flex;justify-content:space-between;gap:20px}
+    .box{border:1px solid #ccc;border-radius:6px;padding:10px;min-width:45%}.tot td{font-weight:700;border-top:2px solid #222}.no-print{background:#4f6d52;color:#fff;text-align:center;padding:10px;cursor:pointer;margin-bottom:10px}@media print{.no-print{display:none}}</style></head><body>
+    <div class="no-print" onclick="window.print()">Imprimer ou enregistrer en PDF</div>
+    <div class="head"><div><h1>${esc(b.nom)}</h1>${esc(b.adresse)}${b.siret ? "<br>SIRET " + esc(b.siret) : ""}${tx && b.tvaIntra ? "<br>TVA " + esc(b.tvaIntra) : ""}</div>
+      <div class="box"><b>${esc(f.artisan.nom)}</b><br>${f.artisan.adresse ? esc(f.artisan.adresse).replace(/\n/g, "<br>") + "<br>" : ""}${f.artisan.siret ? "SIRET " + esc(f.artisan.siret) : ""}</div></div>
+    <h2>Facture n° ${esc(x.facture)}</h2><p>Date : ${fd(x.datePaiement || x.le.slice(0, 10))}</p>
+    <table><tr><th>Désignation</th><th class="n">${tx ? "Montant TTC" : "Montant"}</th></tr>${lignes.map(([l, m]) => `<tr><td>${l}</td><td class="n">${eur(m)}</td></tr>`).join("")}
+      ${tx ? `<tr><td>Total HT</td><td class="n">${eur(x.montant - tva)}</td></tr><tr><td>TVA ${String(tx).replace(".", ",")} %</td><td class="n">${eur(tva)}</td></tr>` : ""}
+      <tr class="tot"><td>Total ${tx ? "TTC" : ""}</td><td class="n">${eur(x.montant)}</td></tr></table>
+    <p>Réglé le ${fd(x.datePaiement || x.le.slice(0, 10))} par ${esc(x.mode.toLowerCase())}.</p>
+    <p style="font-size:11px">${tx ? "" : esc(b.mentionTVA)}</p></body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); } else alert("Autorisez les fenêtres pop-up pour ce site.");
+}
+
+// ================== COMPTABILITÉ : DÉPENSES, TVA, COMPTE DE RÉSULTAT ==================
+const CATEGORIES_DEPENSES = ["Loyer du local", "Électricité, eau, internet", "Assurance", "Honoraires (comptable…)", "Banque et frais de carte", "Fournitures et petit matériel", "Matériel et mobilier", "Communication et publicité", "Salaires et charges", "Logiciel et abonnements", "Transport et déplacements", "Impôts et taxes", "Autres charges"];
+async function adminCompta() {
+  const an = new Date().getFullYear();
+  app.innerHTML = `<div class="card"><div class="row" style="align-items:flex-end">
+      <div><label>Du mois</label><input type="month" id="cpDu" value="${an}-01"></div><div><label>Au mois</label><input type="month" id="cpAu" value="${an}-12"></div>
+      <div style="flex:0 0 auto"><button class="btn" id="cpGo">Calculer</button></div><div style="flex:0 0 auto"><button class="btn osb" id="cpCsv">Export pour le comptable</button></div></div>
+      <p class="muted">Ici, seules les recettes de la boutique comptent (loyers, commissions, suppléments, frais d'installation, sacs). L'argent des ventes appartient aux artisans et n'en fait pas partie.</p></div>
+    <div id="cpRes"></div>
+    <div class="card"><h2>Ajouter une dépense</h2>
+      <div class="row"><div><label>Date</label><input type="date" id="dDa" value="${ymd(new Date())}"></div><div><label>Fournisseur</label><input id="dFo"></div><div><label>Catégorie</label><select id="dCa">${CATEGORIES_DEPENSES.map((c) => `<option>${c}</option>`).join("")}</select></div></div>
+      <div class="row"><div><label>Libellé</label><input id="dLi" placeholder="ex. loyer de janvier, planches OSB"></div><div><label>Montant TTC (€)</label><input id="dTt" inputmode="decimal"></div><div><label>dont TVA (€, sur la facture)</label><input id="dTv" inputmode="decimal" placeholder="0"></div></div>
+      <div id="dmsg"></div><button class="btn" id="dGo" style="margin-top:10px">Enregistrer la dépense</button>
+      <div id="dList" style="margin-top:14px"></div></div>`;
+  let data = null;
+  const L = (a, b, cls = "") => `<tr class="${cls}"><td>${a}</td><td class="num">${b}</td></tr>`;
+  const calc = async () => {
+    const du = $("#cpDu").value, au = $("#cpAu").value;
+    try { data = await api(`/compta?du=${du}&au=${au}`); } catch (e) { $("#cpRes").innerHTML = `<div class="msg err">${esc(e.message)}</div>`; return; }
+    const d = data, ass = d.tva.assujetti;
+    // aide CA12 : acomptes de l'année suivante = 55 % en juillet et 40 % en décembre de la TVA nette de l'année, si elle atteint 1 000 €
+    const acomptes = d.tvaNette >= 100000;
+    $("#cpRes").innerHTML = `
+      <div class="card"><h2>Recettes de la boutique</h2><table><tr><th>Type</th>${ass ? '<th class="num">HT</th><th class="num">TVA</th>' : ""}<th class="num">${ass ? "TTC" : "Montant"}</th></tr>
+        ${d.recettes.map((r) => `<tr><td>${esc(r.type)}</td>${ass ? `<td class="num">${eur(r.ht)}</td><td class="num">${eur(r.tva)}</td>` : ""}<td class="num">${eur(r.ttc)}</td></tr>`).join("") || "<tr><td class='muted'>Aucune recette sur la période.</td></tr>"}
+        <tr><td><b>Total</b></td>${ass ? `<td class="num"><b>${eur(d.totalRecettesHT)}</b></td><td class="num"><b>${eur(d.tvaCollectee)}</b></td>` : ""}<td class="num"><b>${eur(d.recettes.reduce((t, r) => t + r.ttc, 0))}</b></td></tr></table>
+        ${ass ? "" : `<p class="muted">${d.totalRecettesHT > 3750000 ? '<b style="color:var(--rouge)">Attention : plus de 37 500 € de recettes, la boutique devra facturer la TVA (à activer dans Paramètres).</b>' : `Franchise de TVA : seuil de 37 500 € par an, il reste ${eur(Math.max(0, 3750000 - d.totalRecettesHT))} sur cette période.`}</p>`}</div>
+      <div class="card"><h2>Dépenses</h2><table><tr><th>Catégorie</th>${ass ? '<th class="num">HT</th><th class="num">TVA</th>' : ""}<th class="num">TTC</th></tr>
+        ${d.depenses.map((r) => `<tr><td>${esc(r.type)}</td>${ass ? `<td class="num">${eur(r.ht)}</td><td class="num">${eur(r.tva)}</td>` : ""}<td class="num">${eur(r.ttc)}</td></tr>`).join("") || "<tr><td class='muted'>Aucune dépense enregistrée.</td></tr>"}</table></div>
+      ${ass ? `<div class="card"><h2>TVA à déclarer (aide à la déclaration CA12)</h2><table>
+        ${L("TVA collectée sur vos recettes", eur(d.tvaCollectee))}${L("TVA déductible sur vos dépenses", "−" + eur(d.tvaDeductible))}
+        ${L(d.tvaNette >= 0 ? "TVA à payer sur la période" : "Crédit de TVA (remboursable ou reportable)", eur(Math.abs(d.tvaNette)), "tot")}</table>
+        <p class="muted">Régime simplifié : la déclaration annuelle CA12 se fait début mai pour l'année précédente, sur impots.gouv.fr (espace professionnel).
+        ${acomptes ? `Acomptes de l'année suivante : <b>${eur(Math.round(d.tvaNette * 0.55))}</b> en juillet et <b>${eur(Math.round(d.tvaNette * 0.4))}</b> en décembre.` : "TVA de moins de 1 000 € sur l'année : pas d'acomptes à verser."}
+        Faites vérifier par votre comptable avant de déclarer.</p></div>` : ""}
+      <div class="card"><h2>Compte de résultat simplifié</h2><table>
+        ${L("Recettes HT", eur(d.totalRecettesHT))}${L("Dépenses HT", "−" + eur(d.totalDepensesHT))}${L(d.resultatHT >= 0 ? "Bénéfice" : "Perte", eur(Math.abs(d.resultatHT)), "tot")}</table>
+        <h3 style="margin-top:14px">Pour le bilan (à la fin de la période)</h3><table>
+        ${L("Ventes à reverser aux artisans (dette)", eur(d.dettes.aReverser))}${L("Bons d'achat, avoirs et cartes cadeaux non utilisés (dette)", eur(d.dettes.bons))}</table>
+        <p class="muted">Ce calcul aide à préparer les comptes annuels. Le bilan et la déclaration de résultat (impôt sur les sociétés) se font sur impots.gouv.fr ou par votre comptable, avec l'export ci-dessus.</p></div>`;
+  };
+  const liste = async () => {
+    const D = await api(`/depenses?du=${$("#cpDu").value}&au=${$("#cpAu").value}`);
+    $("#dList").innerHTML = `<table><tr><th>Date</th><th>Fournisseur</th><th>Libellé</th><th>Catégorie</th><th class="num">TTC</th><th class="num">TVA</th><th></th></tr>${D.map((x) => `<tr><td>${fd(x.date)}</td><td>${esc(x.fournisseur)}</td><td>${esc(x.libelle)}</td><td>${esc(x.categorie)}</td><td class="num">${eur(x.ttc)}</td><td class="num">${eur(x.tva)}</td><td class="num"><button class="btn small ghost" data-dd="${x.id}">✕</button></td></tr>`).join("") || "<tr><td class='muted'>Aucune dépense.</td></tr>"}</table>`;
+    $("#dList").querySelectorAll("[data-dd]").forEach((b) => (b.onclick = async () => { if (!confirm("Supprimer cette dépense ?")) return; await api("/depenses/" + b.dataset.dd, { method: "DELETE" }); liste(); calc(); }));
+  };
+  $("#cpGo").onclick = () => { calc(); liste(); };
+  $("#dGo").onclick = async () => {
+    try { await api("/depenses", { method: "POST", body: { date: $("#dDa").value, fournisseur: $("#dFo").value, categorie: $("#dCa").value, libelle: $("#dLi").value, ttc: $("#dTt").value, tva: $("#dTv").value } });
+      ["dFo", "dLi", "dTt", "dTv"].forEach((i) => ($("#" + i).value = "")); msg($("#dmsg"), "Dépense enregistrée.", "ok"); liste(); calc(); }
+    catch (e) { msg($("#dmsg"), e.message); }
+  };
+  $("#cpCsv").onclick = async () => {
+    if (!data) await calc();
+    const n = (c) => (c / 100).toFixed(2).replace(".", ",");
+    const rows = [["Date", "Recette / dépense", "Catégorie", "Libellé", "Tiers", "HT", "TVA", "TTC"], ...data.lignes.map((l) => [fd(l.date), l.sens === "recette" ? "Recette" : "Dépense", l.type, l.libelle, l.tiers, n(l.ht), n(l.tva), n(l.ttc)])];
+    const csv = "\ufeff" + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `comptabilite-${data.du}-${data.au}.csv`; a.click();
+  };
+  calc(); liste();
+}
+
 async function imprimerReleve(mois, artisanId) {
   const r = await api(`/releve?mois=${mois}${artisanId ? "&artisanId=" + artisanId : ""}`);
   const b = r.boutique, mm = new Date(mois + "-15").toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
   const facture = r.commission + r.totalPenalites + (r.supplement || 0) + (r.serviceEnvoi || 0);
+  const tx = b.assujetti ? b.taux : 0, tvaFac = tx ? Math.round((facture * tx) / (100 + tx)) : 0;
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relevé ${esc(r.artisan.nom)} ${mois}</title><style>
     body{font-family:Arial,sans-serif;font-size:12px;color:#222;max-width:190mm;margin:10mm auto}h1{font-size:18px;margin:0}h2{font-size:14px;margin:22px 0 8px;border-bottom:2px solid #6f8f72;padding-bottom:4px}
     table{width:100%;border-collapse:collapse}th,td{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}td.n,th.n{text-align:right}
@@ -825,12 +911,13 @@ async function imprimerReleve(mois, artisanId) {
     <h2>Facture de commission n° ${esc(r.facture.numero)}</h2>
     <p>Date : ${new Date().toLocaleDateString("fr-FR")} · Période : ${mm}</p>
     <table><tr><th>Désignation</th><th class="n">Montant</th></tr>
-      <tr><td>Commission de ${r.commissionTaux} % sur les ventes réalisées pour votre compte (${eur(r.ca)})</td><td class="n">${eur(r.commission)}</td></tr>
+      <tr><td>Commission de ${r.commissionTaux} % sur les ventes réalisées pour votre compte (${eur(r.ca)}${r.tvaProduits ? `, soit ${eur(r.baseCommission)} HT` : ""})</td><td class="n">${eur(r.commission)}</td></tr>
       ${r.penalites.map((x) => `<tr><td>Pénalité : ${esc(x.motif)} le ${fd(x.date)} (${x.creneau === "matin" ? "matin" : "après-midi"})</td><td class="n">${eur(x.montant)}</td></tr>`).join("")}
       ${r.supplement ? `<tr><td>Supplément mensuel formule sans participation à l'accueil (${mm})</td><td class="n">${eur(r.supplement)}</td></tr>` : ""}
       ${r.serviceEnvoi ? `<tr><td>Service dépôt par envoi : réception et installation des créations (${mm})</td><td class="n">${eur(r.serviceEnvoi)}</td></tr>` : ""}
-      <tr class="tot"><td>Total ${esc(b.mentionTVA ? "" : "TTC")}</td><td class="n big">${eur(facture)}</td></tr></table>
-    <p style="font-size:11px">${esc(b.mentionTVA)}<br>Montant déduit des ventes reversées ci-dessous.</p>
+      ${tx ? `<tr><td>Total HT</td><td class="n">${eur(facture - tvaFac)}</td></tr><tr><td>TVA ${String(tx).replace(".", ",")} %</td><td class="n">${eur(tvaFac)}</td></tr>` : ""}
+      <tr class="tot"><td>Total ${tx ? "TTC" : ""}</td><td class="n big">${eur(facture)}</td></tr></table>
+    <p style="font-size:11px">${tx ? (b.tvaIntra ? "N° TVA intracommunautaire : " + esc(b.tvaIntra) : "") : esc(b.mentionTVA)}<br>Montant déduit des ventes reversées ci-dessous.</p>
 
     <h2>Relevé des ventes et reversement</h2>
     <table>
@@ -1274,8 +1361,9 @@ async function adminSuivi() {
         <td>${c ? `${c.rendueLe ? `<span class="tag">rendue le ${fd(c.rendueLe)}${c.retenue ? " − " + eur(c.retenue) + " retenus" : ""}</span>` : `<span class="tag">${eur(c.montant)} reçue le ${fd(c.recuLe)}</span>`}${c.reference ? `<div class="muted">${esc(c.reference)}</div>` : ""}` : `<span class="tag off">à recevoir : ${eur(cautionDue)}</span>`}
           <div><button class="btn small ghost" style="padding:0 6px;margin-top:3px" data-cau="${a.artisanId}">${c ? (c.rendueLe ? "Modifier" : "Rendre / modifier") : "Enregistrer"}</button></div></td>
         <td style="color:${alerte ? "var(--rouge)" : "inherit"};font-weight:600">${a.couvertJusquau ? fd(a.couvertJusquau) : "aucun paiement"}</td>
-        <td>${a.paiements.map((x) => `<div class="muted">${eur(x.montant)} · ${fd(x.du)} → ${fd(x.au)} · ${esc(x.mode)}${x.note ? " · " + esc(x.note) : ""} <button class="btn small ghost" style="padding:0 6px" data-ldel="${a.artisanId}|${x.id}">✕</button></div>`).join("") || '<span class="muted">—</span>'}</td>
+        <td>${a.paiements.map((x) => `<div class="muted">${eur(x.montant)} · ${fd(x.du)} → ${fd(x.au)} · ${esc(x.mode)}${x.installation ? " · dont " + eur(x.installation) + " d'installation" : ""}${x.note ? " · " + esc(x.note) : ""} <button class="btn small ghost" style="padding:0 6px" data-lfac="${a.artisanId}|${x.id}">Facture</button> <button class="btn small ghost" style="padding:0 6px" data-ldel="${a.artisanId}|${x.id}">✕</button></div>`).join("") || '<span class="muted">—</span>'}</td>
         <td class="num"><button class="btn small" data-lp="${a.artisanId}">Enregistrer un paiement</button></td></tr>`; }).join("") || "<tr><td class='muted'>Aucun artisan.</td></tr>"}</table>`;
+    $("#suLoy").querySelectorAll("[data-lfac]").forEach((b) => (b.onclick = () => { const [a, id] = b.dataset.lfac.split("|"); imprimerFactureLoyer(a, id).catch((e) => alert(e.message)); }));
     $("#suLoy").querySelectorAll("[data-ldel]").forEach((b) => (b.onclick = async () => { if (!confirm("Supprimer ce paiement ?")) return; const [a, id] = b.dataset.ldel.split("|"); await api(`/loyers/${a}/${id}`, { method: "DELETE" }); loyers(); }));
     $("#suLoy").querySelectorAll("[data-cau]").forEach((b) => (b.onclick = () => {
       const a = L.find((x) => x.artisanId === b.dataset.cau), c = a.caution || {};
@@ -1295,9 +1383,10 @@ async function adminSuivi() {
       const au = (() => { const d = new Date(du + "T12:00:00"); d.setMonth(d.getMonth() + 1); d.setDate(d.getDate() - 1); return ymd(d); })();
       openModal(`<h2>Loyer – ${esc(a.nom)}</h2><div class="row"><div><label>Montant (€)</label><input id="lMt" inputmode="decimal" value="${((a.loyer + (a.paiements.length ? 0 : S.settings.fraisInstallation ?? 5000)) / 100).toFixed(2).replace(".", ",")}"></div><div><label>Mode</label><select id="lMo"><option>Virement</option><option>Carte</option><option>Espèces</option><option>Chèque</option></select></div></div>
         <div class="row"><div><label>Du</label><input type="date" id="lDu" value="${du}"></div><div><label>Au</label><input type="date" id="lAu" value="${au}"></div></div>
-        <label>Note</label><input id="lNo" value="${a.paiements.length ? "" : "dont " + eur(S.settings.fraisInstallation ?? 5000) + " de frais d'installation"}"><div id="lmsg"></div>
+        <div class="row"><div><label>Dont frais d'installation (€)</label><input id="lIn" inputmode="decimal" value="${a.paiements.length ? "0" : ((S.settings.fraisInstallation ?? 5000) / 100).toFixed(2).replace(".", ",")}"></div><div><label>Date du paiement</label><input type="date" id="lDp" value="${auj}"></div></div>
+        <label>Note</label><input id="lNo"><div id="lmsg"></div>
         <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="lGo">Enregistrer</button></div>`);
-      $("#lGo").onclick = async () => { try { await api("/loyers", { method: "POST", body: { artisanId: a.artisanId, montant: $("#lMt").value, mode: $("#lMo").value, du: $("#lDu").value, au: $("#lAu").value, note: $("#lNo").value } }); closeModal(); loyers(); } catch (e) { msg($("#lmsg"), e.message); } };
+      $("#lGo").onclick = async () => { try { await api("/loyers", { method: "POST", body: { artisanId: a.artisanId, montant: $("#lMt").value, installation: $("#lIn").value, datePaiement: $("#lDp").value, mode: $("#lMo").value, du: $("#lDu").value, au: $("#lAu").value, note: $("#lNo").value } }); closeModal(); loyers(); } catch (e) { msg($("#lmsg"), e.message); } };
     }));
   };
   const reversements = async () => {
@@ -1355,7 +1444,11 @@ async function adminParametres() {
       <label>Adresse (ticket)</label><input id="sAdr" value="${esc(s.adresse)}">
       <label>Commission de la boutique (%)</label><input id="sCom" type="number" value="${s.commission}">
       <label>SIRET (relevés et factures)</label><input id="sSiret" value="${esc(s.siret || "")}">
-      <label>Mention TVA sur les factures</label><input id="sTva" value="${esc(s.mentionTVA || "")}">
+      <h3 style="margin-top:16px">TVA de la boutique</h3>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sAss" style="width:auto" ${s.assujettiTVA ? "checked" : ""}> La boutique facture la TVA (au-delà de 37 500 € de recettes par an)</label>
+      <div class="row"><div><label>Taux de TVA</label><select id="sTx">${[20, 10, 5.5].map((t) => `<option ${Number(s.tauxTVA ?? 20) === t ? "selected" : ""}>${t}</option>`).join("")}</select></div><div><label>N° de TVA intracommunautaire</label><input id="sTvaI" value="${esc(s.tvaIntra || "")}"></div></div>
+      <label>Mention TVA sur les factures (si la boutique ne facture pas la TVA)</label><input id="sTva" value="${esc(s.mentionTVA || "")}">
+      <p class="muted">Les loyers et suppléments saisis sont des montants TTC : si la TVA est activée, la caisse en déduit le HT et la TVA sur les factures.</p>
       <div class="row"><div><label>Loyer stand 1 m (€)</label><input id="sP1" inputmode="decimal" value="${(s.prixStand1 / 100).toFixed(2).replace(".", ",")}"></div><div><label>Loyer stand 2 m (€)</label><input id="sP2" inputmode="decimal" value="${(s.prixStand2 / 100).toFixed(2).replace(".", ",")}"></div></div>
       <label>Supplément mensuel formule sans participation à l'accueil (€)</label><input id="sPen" inputmode="decimal" value="${((s.supplementSansAccueil ?? 5000) / 100).toFixed(2).replace(".", ",")}">
       <label>Frais d'installation, payés une fois à l'arrivée (€)</label><input id="sInst" inputmode="decimal" value="${((s.fraisInstallation ?? 5000) / 100).toFixed(2).replace(".", ",")}">
@@ -1371,7 +1464,7 @@ async function adminParametres() {
     </div>
     <div class="card"><h2>Mot de passe gérance</h2><label>Nouveau mot de passe</label><input type="password" id="apw"><div id="apm"></div><button class="btn" id="apgo" style="margin-top:10px">Changer</button></div></div>`;
   $("#sGo").onclick = async () => {
-    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, supplementSansAccueil: $("#sPen").value, fraisInstallation: $("#sInst").value, supplementEnvoi: $("#sEnv").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
+    try { S.settings = await api("/settings", { method: "PUT", body: { nomBoutique: $("#sNom").value, adresse: $("#sAdr").value, commission: $("#sCom").value, fondReserve: $("#sFond").value, siret: $("#sSiret").value, mentionTVA: $("#sTva").value, assujettiTVA: $("#sAss").checked, tauxTVA: $("#sTx").value, tvaIntra: $("#sTvaI").value, prixStand1: $("#sP1").value, prixStand2: $("#sP2").value, supplementSansAccueil: $("#sPen").value, fraisInstallation: $("#sInst").value, supplementEnvoi: $("#sEnv").value } }); $("#titre").textContent = S.settings.nomBoutique; msg($("#smsg"), "Enregistré.", "ok"); }
     catch (e) { msg($("#smsg"), e.message); }
   };
   if ($("#act")) $("#act").onclick = async () => {

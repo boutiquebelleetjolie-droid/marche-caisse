@@ -81,6 +81,7 @@ async function getSettings() {
     prixStand1: 10000,
     prixStand2: 18000,
     supplementSansAccueil: 5000, fraisInstallation: 5000, supplementEnvoi: 2000,
+    assujettiTVA: false, tauxTVA: 20, tvaIntra: "",
     ...((await getJSON("settings")) || {}),
   };
 }
@@ -100,6 +101,7 @@ function majCoordonnees(a, body) {
     if (iban && !ibanValide(iban)) throw new UErr("IBAN incorrect : vérifiez les chiffres");
     a.iban = iban;
   }
+  if (body.tvaProduits != null) a.tvaProduits = [0, 2.1, 5.5, 10, 20].includes(Number(body.tvaProduits)) ? Number(body.tvaProduits) : 0;
   if (body.bic != null) {
     const bic = String(body.bic).replace(/\s+/g, "").toUpperCase();
     if (bic && !/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(bic)) throw new UErr("BIC incorrect (8 ou 11 caractères)");
@@ -305,7 +307,10 @@ async function calculMois(mois, a, s) {
   for (const v of ventes) for (const l of v.lignes) if (l.artisanId === a.id) lignes.push({ date: v.date, ticket: v.numero, ref: l.ref, nom: l.nom, qte: l.qte, pu: l.pu, total: l.total });
   lignes.sort((p, q) => p.date.localeCompare(q.date));
   const ca = lignes.reduce((t, l) => t + l.total, 0);
-  const commission = Math.round((ca * s.commission) / 100);
+  // commission sur le prix HT si l'artisan est assujetti à la TVA, sur le TTC sinon
+  const tvaProduits = Number(a.tvaProduits) || 0;
+  const baseCommission = tvaProduits ? Math.round((ca * 100) / (100 + tvaProduits)) : ca;
+  const commission = Math.round((baseCommission * s.commission) / 100);
   const sansAccueil = a.formule === "sans accueil" && (!a.formuleDepuis || du >= a.formuleDepuis);
   const supplement = sansAccueil ? s.supplementSansAccueil : 0;
   // dépôt par envoi : la boutique reçoit et installe les créations
@@ -315,8 +320,17 @@ async function calculMois(mois, a, s) {
   let report = 0;
   const prev = moisPrecedent(mois);
   if (prev >= debut) { const p = await calculMois(prev, a, s); if (p.solde < 0) report = -p.solde; }
-  return { du, au, lignes, ca, commission, supplement, serviceEnvoi, sansAccueil, report, solde: ca - commission - supplement - serviceEnvoi - report };
+  return { du, au, lignes, ca, baseCommission, tvaProduits, commission, supplement, serviceEnvoi, sansAccueil, report, solde: ca - commission - supplement - serviceEnvoi - report };
 }
+// Numérotation continue des factures (commission, loyers)
+async function numeroFacture(mois) {
+  const cpt = ((await getJSON("compteurFacture"))?.n || 0) + 1;
+  await setJSON("compteurFacture", { n: cpt });
+  return `F${mois.replace("-", "")}-${String(cpt).padStart(4, "0")}`;
+}
+// TVA contenue dans un montant TTC
+const tvaDans = (ttc, taux) => Math.round((ttc * taux) / (100 + taux));
+const infosTVA = (s) => ({ assujetti: !!s.assujettiTVA, taux: s.assujettiTVA ? Number(s.tauxTVA) || 20 : 0, tvaIntra: s.tvaIntra || "" });
 async function releve(mois, artisanId) {
   const s = await getSettings();
   const a = await getJSON(`artisans/${artisanId}`);
@@ -326,18 +340,72 @@ async function releve(mois, artisanId) {
   // numéro de facture attribué une seule fois par artisan et par mois
   let fac = await getJSON(`factures/${mois}/${artisanId}`);
   if (!fac) {
-    const cpt = ((await getJSON("compteurFacture"))?.n || 0) + 1;
-    await setJSON("compteurFacture", { n: cpt });
-    fac = { numero: `F${mois.replace("-", "")}-${String(cpt).padStart(4, "0")}`, emiseLe: new Date().toISOString() };
+    fac = { numero: await numeroFacture(mois), emiseLe: new Date().toISOString() };
     await setJSON(`factures/${mois}/${artisanId}`, fac);
   }
   return {
-    mois, du: c.du, au: c.au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA },
+    mois, du: c.du, au: c.au, boutique: { nom: s.nomBoutique, adresse: s.adresse, siret: s.siret, mentionTVA: s.mentionTVA, ...infosTVA(s) },
     artisan: { nom: a.nom, initiales: a.initiales, email: a.email, telephone: a.telephone, stand: a.stand, adresse: a.adresse || "", siret: a.siret || "", iban: a.iban || "", titulaire: a.titulaire || "" },
-    lignes: c.lignes, ca: c.ca, commissionTaux: s.commission, commission: c.commission, penalites: [], totalPenalites: 0, loyer,
+    lignes: c.lignes, ca: c.ca, baseCommission: c.baseCommission, tvaProduits: c.tvaProduits, commissionTaux: s.commission, commission: c.commission, penalites: [], totalPenalites: 0, loyer,
     formule: c.sansAccueil ? "sans participation à l'accueil" : "avec participation à l'accueil",
     supplement: c.supplement, serviceEnvoi: c.serviceEnvoi, report: c.report, aReverser: c.solde, facture: fac, reversement: await getJSON(`reversements/${mois}/${artisanId}`),
   };
+}
+
+// ---- Comptabilité de la boutique (ses propres recettes, pas les ventes des artisans) ----
+function moisEntre(du, au) { const out = []; let m = du; while (m <= au) { out.push(m); const [y, mo] = m.split("-").map(Number); m = mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, "0")}`; } return out; }
+async function comptabilite(du, au, s) {
+  const T = infosTVA(s), taux = T.taux;
+  const arts = await listJSON("artisans/");
+  const lignes = []; // { date, type, libelle, tiers, ttc, tva, ht, sens: "recette"|"depense" }
+  const ajouter = (sens, date, type, libelle, tiers, ttc, tva) => lignes.push({ sens, date, type, libelle, tiers, ttc, tva, ht: ttc - tva });
+  for (const mois of moisEntre(du, au)) {
+    const [y, m] = mois.split("-").map(Number);
+    const fin = `${mois}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`;
+    const ventes = (await ventesEntre(`${mois}-01`, fin)).filter((v) => !v.annulee);
+    const caArt = {}; let sacs = 0;
+    for (const v of ventes) for (const l of v.lignes) { if (l.artisanId === "boutique") sacs += l.total; else if (!estCadeau(l)) caArt[l.artisanId] = (caArt[l.artisanId] || 0) + l.total; }
+    for (const a of arts) {
+      const ca = caArt[a.id] || 0, tp = Number(a.tvaProduits) || 0;
+      const base = tp ? Math.round((ca * 100) / (100 + tp)) : ca;
+      const com = Math.round((base * s.commission) / 100);
+      if (com) ajouter("recette", fin, "Commissions", `Commission ${s.commission} % – ${mois}`, a.nom, com, tvaDans(com, taux));
+      const actif = a.actif || ca;
+      const sansAcc = a.formule === "sans accueil" && (!a.formuleDepuis || `${mois}-01` >= a.formuleDepuis);
+      if (actif && sansAcc && (a.dateDebut || "") <= fin) ajouter("recette", fin, "Suppléments formule", `Supplément sans accueil – ${mois}`, a.nom, s.supplementSansAccueil, tvaDans(s.supplementSansAccueil, taux));
+      if (actif && a.envoi && (a.dateDebut || "") <= fin) { const e = s.supplementEnvoi ?? 2000; ajouter("recette", fin, "Service dépôt par envoi", `Dépôt par envoi – ${mois}`, a.nom, e, tvaDans(e, taux)); }
+    }
+    if (sacs) ajouter("recette", fin, "Ventes de sacs", `Sacs vendus – ${mois}`, "Clients", sacs, Math.round((sacs * 20) / 120) * (T.assujetti ? 1 : 0));
+  }
+  const fin = au + "-31";
+  const loyers = await listJSON("loyers/");
+  const noms = Object.fromEntries(arts.map((a) => [a.id, a.nom]));
+  for (const x of loyers) {
+    const d = x.datePaiement || (x.le || "").slice(0, 10);
+    if (d < du + "-01" || d > fin) continue;
+    const inst = x.installation || 0, loy = x.montant - inst;
+    if (loy) ajouter("recette", d, "Loyers des stands", `Loyer du ${x.du} au ${x.au}${x.facture ? " – facture " + x.facture : ""}`, noms[x.artisanId] || "", loy, tvaDans(loy, taux));
+    if (inst) ajouter("recette", d, "Frais d'installation", `Frais d'installation${x.facture ? " – facture " + x.facture : ""}`, noms[x.artisanId] || "", inst, tvaDans(inst, taux));
+  }
+  for (const d of await listJSON("depenses/")) {
+    if (d.date < du + "-01" || d.date > fin) continue;
+    ajouter("depense", d.date, d.categorie, d.libelle || d.categorie, d.fournisseur, d.ttc, T.assujetti ? d.tva : 0);
+  }
+  lignes.sort((a, b) => a.date.localeCompare(b.date));
+  const groupe = (sens) => { const g = {}; for (const l of lignes.filter((x) => x.sens === sens)) { const k = (g[l.type] ||= { type: l.type, ttc: 0, tva: 0, ht: 0 }); k.ttc += l.ttc; k.tva += l.tva; k.ht += l.ht; } return Object.values(g); };
+  const recettes = groupe("recette"), depenses = groupe("depense");
+  const sum = (arr, k) => arr.reduce((t, x) => t + x[k], 0);
+  const tvaCollectee = sum(recettes, "tva"), tvaDeductible = sum(depenses, "tva");
+  // dettes à la fin de la période : ventes à reverser non payées, bons en circulation
+  let aReverser = 0;
+  for (const mois of moisEntre(du, au)) {
+    const faits = await listJSON(`reversements/${mois}/`);
+    for (const a of arts) { if ((a.dateDebut || a.creeLe || "").slice(0, 7) > mois) continue; const c = await calculMois(mois, a, s); if (c.solde > 0 && !faits.find((f) => f.artisanId === a.id)) aReverser += c.solde; }
+  }
+  const bons = (await listJSON("bons/")).filter((b) => !b.annule && b.solde > 0).reduce((t, b) => t + b.solde, 0);
+  return { du, au, tva: T, recettes, depenses, lignes,
+    totalRecettesHT: sum(recettes, "ht"), totalDepensesHT: sum(depenses, "ht"), resultatHT: sum(recettes, "ht") - sum(depenses, "ht"),
+    tvaCollectee, tvaDeductible, tvaNette: tvaCollectee - tvaDeductible, dettes: { aReverser, bons } };
 }
 
 // ---- Alertes : rupture, stock bas, date limite proche ou dépassée ----
@@ -448,7 +516,7 @@ export default async (req) => {
 
     if (path === "/settings/public" && m === "GET") {
       const s = await getSettings();
-      return json({ nomBoutique: s.nomBoutique, adresse: s.adresse, commission: s.commission, fondReserve: s.fondReserve });
+      return json({ nomBoutique: s.nomBoutique, adresse: s.adresse, commission: s.commission, fondReserve: s.fondReserve, fraisInstallation: s.fraisInstallation, supplementEnvoi: s.supplementEnvoi });
     }
 
     // --- Espace caisse (uniquement sur un poste activé) ---
@@ -883,9 +951,40 @@ export default async (req) => {
       if (!a) return err("Artisan introuvable");
       const montant = toCents(body.montant);
       if (!(montant > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(body.du || "") || !/^\d{4}-\d{2}-\d{2}$/.test(body.au || "") || body.au < body.du) return err("Montant et période (du / au) obligatoires");
-      const x = { id: uid(), artisanId: a.id, montant, du: body.du, au: body.au, mode: String(body.mode || "Virement"), note: String(body.note || "").trim(), le: new Date().toISOString() };
+      const installation = Math.min(montant, Math.max(0, toCents(body.installation || 0)));
+      const datePaiement = /^\d{4}-\d{2}-\d{2}$/.test(body.datePaiement || "") ? body.datePaiement : parisDate(new Date().toISOString());
+      const x = { id: uid(), artisanId: a.id, montant, installation, datePaiement, facture: await numeroFacture(datePaiement.slice(0, 7)), du: body.du, au: body.au, mode: String(body.mode || "Virement"), note: String(body.note || "").trim(), le: new Date().toISOString() };
       await setJSON(`loyers/${a.id}/${x.id}`, x);
       return json(x);
+    }
+    const mLoyFac = path.match(/^\/loyers\/([a-f0-9-]+)\/([a-f0-9-]+)\/facture$/);
+    if (mLoyFac && m === "GET") {
+      const [a, x] = await Promise.all([getJSON(`artisans/${mLoyFac[1]}`), getJSON(`loyers/${mLoyFac[1]}/${mLoyFac[2]}`)]);
+      if (!a || !x) return err("Facture introuvable");
+      if (!x.facture) { x.facture = await numeroFacture((x.datePaiement || x.le).slice(0, 7)); await setJSON(`loyers/${a.id}/${x.id}`, x); }
+      return json({ boutique: { nom: settings.nomBoutique, adresse: settings.adresse, siret: settings.siret, mentionTVA: settings.mentionTVA, ...infosTVA(settings) },
+        artisan: { nom: a.nom, initiales: a.initiales, adresse: a.adresse || "", siret: a.siret || "", stand: a.stand, formule: a.formule }, paiement: x });
+    }
+
+    // --- Comptabilité : dépenses, TVA, compte de résultat ---
+    if (path === "/depenses" && m === "GET") {
+      const du = url.searchParams.get("du") || "0000", au = url.searchParams.get("au") || "9999";
+      return json((await listJSON("depenses/")).filter((d) => d.date >= du && d.date <= au + "-31").sort((x, y) => y.date.localeCompare(x.date)));
+    }
+    if (path === "/depenses" && m === "POST") {
+      const ttc = toCents(body.ttc || 0);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(body.date || "") || !(ttc > 0)) return err("Date et montant TTC obligatoires");
+      const tva = body.tva === "" || body.tva == null ? 0 : Math.max(0, Math.min(ttc, toCents(body.tva)));
+      const d = { id: uid(), date: body.date, fournisseur: String(body.fournisseur || "").trim(), libelle: String(body.libelle || "").trim(), categorie: String(body.categorie || "Autres charges").trim(), ttc, tva, ht: ttc - tva, immobilisation: !!body.immobilisation };
+      await setJSON(`depenses/${d.id}`, d);
+      return json(d);
+    }
+    const mDep = path.match(/^\/depenses\/([a-f0-9-]+)$/);
+    if (mDep && m === "DELETE") { await store().delete(`depenses/${mDep[1]}`); return json({ ok: true }); }
+    if (path === "/compta" && m === "GET") {
+      const du = url.searchParams.get("du"), au = url.searchParams.get("au");
+      if (!/^\d{4}-\d{2}$/.test(du || "") || !/^\d{4}-\d{2}$/.test(au || "") || au < du) return err("Période incorrecte");
+      return json(await comptabilite(du, au, settings));
     }
     if (path === "/cautions" && m === "POST") {
       const a = await getJSON(`artisans/${body.artisanId}`);
@@ -1014,7 +1113,9 @@ export default async (req) => {
       if (body.adresse != null) s.adresse = String(body.adresse).trim();
       if (body.commission != null) s.commission = Math.min(100, Math.max(0, Number(body.commission) || 0));
       if (body.fondReserve != null && body.fondReserve !== "") s.fondReserve = Math.max(0, toCents(body.fondReserve));
-      for (const k of ["siret", "mentionTVA"]) if (body[k] != null) s[k] = String(body[k]).trim();
+      for (const k of ["siret", "mentionTVA", "tvaIntra"]) if (body[k] != null) s[k] = String(body[k]).trim();
+      if (body.assujettiTVA != null) s.assujettiTVA = !!body.assujettiTVA;
+      if (body.tauxTVA != null && body.tauxTVA !== "") s.tauxTVA = [5.5, 10, 20].includes(Number(body.tauxTVA)) ? Number(body.tauxTVA) : 20;
       for (const k of ["prixStand1", "prixStand2", "supplementSansAccueil", "fraisInstallation", "supplementEnvoi"]) if (body[k] != null && body[k] !== "") s[k] = Math.max(0, toCents(body[k]));
       await setJSON("settings", s);
       return json(s);
