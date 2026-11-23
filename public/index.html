@@ -830,7 +830,7 @@ async function imprimerReleve(mois, artisanId) {
       ${r.report ? `<tr><td>Reste dû du mois précédent (reporté)</td><td class="n">−${eur(r.report)}</td></tr>` : ""}
       <tr class="tot"><td>${r.aReverser >= 0 ? "Montant à reverser" : "Reste dû à la boutique (reporté sur le mois suivant)"}</td><td class="n big">${eur(Math.abs(r.aReverser))}</td></tr></table>
     ${r.reversement ? `<p><b>Virement effectué le ${fd(r.reversement.date)} : ${eur(r.reversement.montant)}</b></p>` : r.aReverser > 0 ? `<p>Virement à venir, au plus tard le 10 du mois suivant.</p>` : ""}
-    <p style="font-size:11px">Loyer de base du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer - (r.supplement || 0))} par mois, réglé à l'avance selon le contrat${r.supplement ? ` ; le supplément de ${eur(r.supplement)} de la formule sans participation est facturé ci-dessus et déduit des ventes du mois` : ""}.</p>
+    <p style="font-size:11px">Loyer de base du stand (${esc(r.artisan.stand || "")}) : ${eur(r.loyer - (r.supplement || 0))} par mois, réglé au début de chaque mois selon le contrat${r.supplement ? ` ; le supplément de ${eur(r.supplement)} de la formule sans participation est facturé ci-dessus et déduit des ventes du mois` : ""}.</p>
 
     <h2 class="page2">Détail des ventes</h2>
     <table><tr><th>Date</th><th>Ticket</th><th>Réf.</th><th>Article</th><th class="n">Qté</th><th class="n">Prix</th><th class="n">Total</th></tr>
@@ -1234,7 +1234,7 @@ async function adminArtisans() {
 // ================== LOYERS, REVERSEMENTS, INVENTAIRES, BONS ==================
 async function adminSuivi() {
   app.innerHTML = `<div id="suAl"></div>
-    <div class="card"><h2>Loyers payés d'avance</h2><p class="muted">Le loyer est réglé 3 mois à l'avance. En rouge : la période payée se termine dans moins de 15 jours ou est dépassée.</p><div id="suLoy"></div></div>
+    <div class="card"><h2>Loyers et cautions</h2><p class="muted">Le loyer est réglé chaque mois. Chèque de caution (non encaissé) : 3 mois de loyer + 50 € pour la casse. En rouge : loyer du mois prochain pas encore reçu, ou caution manquante.</p><div id="suLoy"></div></div>
     <div class="card"><div class="row" style="align-items:flex-end"><h2 style="margin:0">Reversements aux artisans</h2><div style="max-width:200px"><label>Mois des ventes</label><input type="month" id="suM"></div></div><div id="suRev" style="margin-top:10px"></div></div>
     <div class="card"><h2>Inventaires et démarque</h2><div class="row"><div><label>Faire l'inventaire d'un artisan</label><select id="suInvA"></select></div><div style="flex:0 0 auto"><button class="btn ghost" id="suInvGo">Commencer</button></div></div><div id="suInv" style="margin-top:10px"></div></div>
     <div class="card"><h2>Bons d'achat, avoirs et cartes cadeaux</h2><div id="suBon"></div></div>`;
@@ -1243,18 +1243,33 @@ async function adminSuivi() {
   api("/alertes").then((a) => ($("#suAl").innerHTML = alertesHTML(a, true))).catch(() => {});
   const loyers = async () => {
     const L = await api("/loyers");
-    $("#suLoy").innerHTML = `<table><tr><th>Artisan</th><th>Stand</th><th>Payé jusqu'au</th><th>Paiements</th><th></th></tr>${L.map((a) => {
+    $("#suLoy").innerHTML = `<table><tr><th>Artisan</th><th>Stand</th><th>Caution</th><th>Payé jusqu'au</th><th>Paiements</th><th></th></tr>${L.map((a) => {
       const alerte = !a.couvertJusquau || a.couvertJusquau < d15;
+      const c = a.caution, cautionDue = a.loyer * 3 + 5000;
       return `<tr><td><b>${esc(a.initiales)}</b> ${esc(a.nom)}</td><td>${esc(a.stand)} · ${eur(a.loyer)}/mois${a.formule === "sans accueil" ? '<div class="muted">+ supplément sans accueil sur relevé</div>' : ""}</td>
+        <td>${c ? `${c.rendueLe ? `<span class="tag">rendue le ${fd(c.rendueLe)}${c.retenue ? " − " + eur(c.retenue) + " retenus" : ""}</span>` : `<span class="tag">${eur(c.montant)} reçue le ${fd(c.recuLe)}</span>`}${c.reference ? `<div class="muted">${esc(c.reference)}</div>` : ""}` : `<span class="tag off">à recevoir : ${eur(cautionDue)}</span>`}
+          <div><button class="btn small ghost" style="padding:0 6px;margin-top:3px" data-cau="${a.artisanId}">${c ? (c.rendueLe ? "Modifier" : "Rendre / modifier") : "Enregistrer"}</button></div></td>
         <td style="color:${alerte ? "var(--rouge)" : "inherit"};font-weight:600">${a.couvertJusquau ? fd(a.couvertJusquau) : "aucun paiement"}</td>
         <td>${a.paiements.map((x) => `<div class="muted">${eur(x.montant)} · ${fd(x.du)} → ${fd(x.au)} · ${esc(x.mode)}${x.note ? " · " + esc(x.note) : ""} <button class="btn small ghost" style="padding:0 6px" data-ldel="${a.artisanId}|${x.id}">✕</button></div>`).join("") || '<span class="muted">—</span>'}</td>
         <td class="num"><button class="btn small" data-lp="${a.artisanId}">Enregistrer un paiement</button></td></tr>`; }).join("") || "<tr><td class='muted'>Aucun artisan.</td></tr>"}</table>`;
     $("#suLoy").querySelectorAll("[data-ldel]").forEach((b) => (b.onclick = async () => { if (!confirm("Supprimer ce paiement ?")) return; const [a, id] = b.dataset.ldel.split("|"); await api(`/loyers/${a}/${id}`, { method: "DELETE" }); loyers(); }));
+    $("#suLoy").querySelectorAll("[data-cau]").forEach((b) => (b.onclick = () => {
+      const a = L.find((x) => x.artisanId === b.dataset.cau), c = a.caution || {};
+      const v = (x) => ((x || 0) / 100).toFixed(2).replace(".", ",");
+      openModal(`<h2>Chèque de caution – ${esc(a.nom)}</h2><p class="muted">Prévu au contrat : 3 mois de loyer + 50 € pour la casse = ${eur(a.loyer * 3 + 5000)}. Le chèque n'est pas encaissé.</p>
+        <div class="row"><div><label>Montant (€)</label><input id="cMt" inputmode="decimal" value="${v(c.montant ?? a.loyer * 3 + 5000)}"></div><div><label>Reçu le</label><input type="date" id="cRe" value="${c.recuLe || auj}"></div></div>
+        <label>Banque et n° du chèque</label><input id="cRef" value="${esc(c.reference || "")}">
+        <h3 style="margin-top:14px">À la fin du contrat</h3>
+        <div class="row"><div><label>Rendu le</label><input type="date" id="cRen" value="${c.rendueLe || ""}"></div><div><label>Montant retenu (€)</label><input id="cRet" inputmode="decimal" value="${v(c.retenue)}"></div></div>
+        <label>Motif de la retenue</label><input id="cMot" value="${esc(c.motifRetenue || "")}" placeholder="ex. étagère cassée, loyer impayé…"><div id="cmsg"></div>
+        <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="cGo">Enregistrer</button></div>`);
+      $("#cGo").onclick = async () => { try { await api("/cautions", { method: "POST", body: { artisanId: a.artisanId, montant: $("#cMt").value, recuLe: $("#cRe").value, reference: $("#cRef").value, rendueLe: $("#cRen").value, retenue: $("#cRet").value, motifRetenue: $("#cMot").value } }); closeModal(); loyers(); } catch (e) { msg($("#cmsg"), e.message); } };
+    }));
     $("#suLoy").querySelectorAll("[data-lp]").forEach((b) => (b.onclick = () => {
       const a = L.find((x) => x.artisanId === b.dataset.lp);
       const du = a.couvertJusquau ? ymd(new Date(new Date(a.couvertJusquau + "T12:00:00").getTime() + 864e5)) : a.dateDebut || auj;
-      const au = (() => { const d = new Date(du + "T12:00:00"); d.setMonth(d.getMonth() + 3); d.setDate(d.getDate() - 1); return ymd(d); })();
-      openModal(`<h2>Loyer – ${esc(a.nom)}</h2><div class="row"><div><label>Montant (€)</label><input id="lMt" inputmode="decimal" value="${((a.loyer * 3 + (a.paiements.length ? 0 : S.settings.fraisInstallation ?? 5000)) / 100).toFixed(2).replace(".", ",")}"></div><div><label>Mode</label><select id="lMo"><option>Virement</option><option>Carte</option><option>Espèces</option><option>Chèque</option></select></div></div>
+      const au = (() => { const d = new Date(du + "T12:00:00"); d.setMonth(d.getMonth() + 1); d.setDate(d.getDate() - 1); return ymd(d); })();
+      openModal(`<h2>Loyer – ${esc(a.nom)}</h2><div class="row"><div><label>Montant (€)</label><input id="lMt" inputmode="decimal" value="${((a.loyer + (a.paiements.length ? 0 : S.settings.fraisInstallation ?? 5000)) / 100).toFixed(2).replace(".", ",")}"></div><div><label>Mode</label><select id="lMo"><option>Virement</option><option>Carte</option><option>Espèces</option><option>Chèque</option></select></div></div>
         <div class="row"><div><label>Du</label><input type="date" id="lDu" value="${du}"></div><div><label>Au</label><input type="date" id="lAu" value="${au}"></div></div>
         <label>Note</label><input id="lNo" value="${a.paiements.length ? "" : "dont " + eur(S.settings.fraisInstallation ?? 5000) + " de frais d'installation"}"><div id="lmsg"></div>
         <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="closeModal()">Annuler</button><button class="btn" id="lGo">Enregistrer</button></div>`);

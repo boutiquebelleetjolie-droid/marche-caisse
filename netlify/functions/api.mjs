@@ -841,11 +841,11 @@ export default async (req) => {
 
     // --- Loyers payés d'avance et reversements ---
     if (path === "/loyers" && m === "GET") {
-      const [arts, paies] = await Promise.all([listJSON("artisans/"), listJSON("loyers/")]);
+      const [arts, paies, cautions] = await Promise.all([listJSON("artisans/"), listJSON("loyers/"), listJSON("cautions/")]);
       return json(arts.filter((a) => a.actif).map((a) => {
         const p = paies.filter((x) => x.artisanId === a.id).sort((x, y) => x.du.localeCompare(y.du));
         const couvert = p.reduce((mx, x) => (x.au > mx ? x.au : mx), "");
-        return { artisanId: a.id, nom: a.nom, initiales: a.initiales, stand: a.stand, formule: a.formule, dateDebut: a.dateDebut, loyer: a.stand === "2 m" ? settings.prixStand2 : settings.prixStand1, paiements: p, couvertJusquau: couvert };
+        return { artisanId: a.id, nom: a.nom, initiales: a.initiales, stand: a.stand, formule: a.formule, dateDebut: a.dateDebut, loyer: a.stand === "2 m" ? settings.prixStand2 : settings.prixStand1, paiements: p, couvertJusquau: couvert, caution: cautions.find((c) => c.artisanId === a.id) || null };
       }).sort((x, y) => x.nom.localeCompare(y.nom, "fr")));
     }
     if (path === "/loyers" && m === "POST") {
@@ -856,6 +856,14 @@ export default async (req) => {
       const x = { id: uid(), artisanId: a.id, montant, du: body.du, au: body.au, mode: String(body.mode || "Virement"), note: String(body.note || "").trim(), le: new Date().toISOString() };
       await setJSON(`loyers/${a.id}/${x.id}`, x);
       return json(x);
+    }
+    if (path === "/cautions" && m === "POST") {
+      const a = await getJSON(`artisans/${body.artisanId}`);
+      if (!a) return err("Artisan introuvable");
+      if (body.supprimer) { await store().delete(`cautions/${a.id}`); return json({ ok: true }); }
+      const c = { artisanId: a.id, montant: toCents(body.montant || 0), recuLe: body.recuLe || parisDate(new Date().toISOString()), reference: String(body.reference || "").trim(), rendueLe: body.rendueLe || "", retenue: toCents(body.retenue || 0), motifRetenue: String(body.motifRetenue || "").trim() };
+      await setJSON(`cautions/${a.id}`, c);
+      return json(c);
     }
     const mLoy = path.match(/^\/loyers\/([a-f0-9-]+)\/([a-f0-9-]+)$/);
     if (mLoy && m === "DELETE") { await store().delete(`loyers/${mLoy[1]}/${mLoy[2]}`); return json({ ok: true }); }
